@@ -125,6 +125,8 @@ static bool open_ok;
  * Start the amplifier with profile 0, vstep 0, 16-bit samples. Returns true if the NXP code says it
  * is started. `say' gets the lines worth showing.
  */
+void raphael_tfa_dump(const char *when, void (*say)(const char *));
+
 bool
 raphael_tfa_start(void (*say)(const char *))
 {
@@ -180,7 +182,33 @@ raphael_tfa_start(void (*say)(const char *))
 		say("tfa: the amplifier is still warm: reset it\n");
 		tfa_reset(tfa);
 	}
-	err = tfa_dev_start(tfa, 0, 0, 16);
+	err = tfa_dev_start(tfa, 0, 0, 24);      /* Android's speaker is 24 bits in 32-bit slots (audio_platform_info.xml) */
+	raphael_tfa_dump("right after tfa_dev_start", say);
+	if (err == 0) {
+		/* (Android's driver un-mutes after every start) */
+		int mute_err = tfa_dev_set_state(tfa, TFA_STATE_UNMUTE, 0);
+
+		snprintf(line, sizeof(line), "tfa: un-muted (%d)\n", mute_err);
+		say(line);
+		/* its state over the next two seconds: control 0, status 0x10, 0x11, manager 0x14 */
+		static const unsigned waits[] = { 5, 20, 75, 150, 250, 500, 1000 };
+		unsigned t = 0;
+
+		raphael_tfa_dump("just after the un-mute", say);
+		for (unsigned i = 0; i < sizeof(waits) / sizeof(waits[0]); i++) {
+			uint8_t r0[2] = { 0, 0 }, r10[2] = { 0, 0 }, r11[2] = { 0, 0 }, r14[2] = { 0, 0 };
+
+			raphael_amp_sleep(waits[i]);
+			t += waits[i];
+			bus_read(0x00, r0, 2);
+			bus_read(0x10, r10, 2);
+			bus_read(0x11, r11, 2);
+			bus_read(0x14, r14, 2);
+			snprintf(line, sizeof(line), "tfa: +%u ms: 0=%02x%02x 10=%02x%02x 11=%02x%02x 14=%02x%02x\n", t, r0[0], r0[1], r10[0],
+			    r10[1], r11[0], r11[1], r14[0], r14[1]);
+			say(line);
+		}
+	}
 	snprintf(line, sizeof(line), "tfa: tfa_dev_start(profile 0) returned %d; %u messages went to the audio DSP's TFADSP module\n",
 	    err, dsp_messages);
 	say(line);
@@ -203,4 +231,28 @@ raphael_tfa_stop(void (*say)(const char *))
 		kfree_data(ours, container_size);
 		container = NULL;
 	}
+}
+
+/* The amplifier's registers 0x00 to 0x0f (16 bits each), for a look at what it thinks it is doing. */
+void
+raphael_tfa_dump(const char *when, void (*say)(const char *))
+{
+	char line[260];
+	int n = 0;
+
+	n += snprintf(line + n, sizeof(line) - n, "tfa: registers %s:", when);
+	for (unsigned reg = 0; reg < 0x18; reg++) {
+		if (reg == 7 || reg == 10 || reg == 11 || reg == 12 || reg == 13 || reg == 14 || reg == 15) {
+			continue;
+		}
+		uint8_t b[2] = { 0, 0 };
+
+		if (bus_read((uint8_t)reg, b, 2)) {
+			n += snprintf(line + n, sizeof(line) - n, " %x=??", reg);
+		} else {
+			n += snprintf(line + n, sizeof(line) - n, " %x=%02x%02x", reg, b[0], b[1]);
+		}
+	}
+	snprintf(line + n, sizeof(line) - n, "\n");
+	say(line);
 }

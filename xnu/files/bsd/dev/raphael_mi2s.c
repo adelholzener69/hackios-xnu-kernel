@@ -471,6 +471,19 @@ raphael_tfadsp_report(void)
 }
 
 extern void raphael_tfadsp_close(void);
+extern void raphael_tfa_dump(const char *when, void (*say)(const char *));
+extern kern_return_t thread_terminate(thread_t thread);
+static void say_line(const char *text);
+
+/* during the tone: a look at the data pin and the amplifier, from a thread of its own */
+static void
+look_thread(__unused void *parameter, __unused wait_result_t result)
+{
+	delay_for_interval(4000, NSEC_PER_MSEC);
+	m_edges("DURING THE TONE", 0);
+	raphael_tfa_dump("during the tone", say_line);
+	thread_terminate(current_thread());
+}
 extern bool hakios_raphael_tone(uint32_t ms, uint32_t gain, uint32_t ramp_ms);
 extern bool raphael_tfa_start(void (*say)(const char *));
 extern void raphael_tfa_stop(void (*say)(const char *));
@@ -485,8 +498,8 @@ bool
 raphael_mi2s_step(void)
 {
 	uint32_t hold = 3, tfa = 0;
-	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * M_BITS * 2, M_CLK_COUPLE_NO, 0, 1 };
-	struct m_i2s cfg = { .version = 1, .bit_width = M_BITS, .channel_mode = 1 /* SD0 */, .mono_stereo = 1 /* stereo */,
+	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * 32 * 2, M_CLK_COUPLE_NO, 0, 1 };
+	struct m_i2s cfg = { .version = 1, .bit_width = 24, .channel_mode = 1 /* SD0 */, .mono_stereo = 1 /* stereo */,
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
 	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
 	uint32_t tx = 0, enable = 1, bypass = 0, tone_ms = 3000, tone_gain_arg = 4, tone_ramp_ms = 1000;
@@ -520,9 +533,9 @@ raphael_mi2s_step(void)
 	m_pin(140, 1, 0, 3, false, false);
 	say("mi2s: pins on the interface: 137=%#x 138=%#x 139=%#x 140=%#x\n", m_rd(137 * 0x1000u), m_rd(138 * 0x1000u),
 	    m_rd(139 * 0x1000u), m_rd(140 * 0x1000u));
-	ok = m_param("the quaternary MI2S bit clock (0x106) at 1.536 MHz, on", true, M_MOD_CLOCK_SET, M_PARAM_CLOCK_SET, &clk,
+	ok = m_param("the quaternary MI2S bit clock (0x106) at 3.072 MHz (24 bits in 32-bit slots), on", true, M_MOD_CLOCK_SET, M_PARAM_CLOCK_SET, &clk,
 	    sizeof(clk)) &&
-	    m_param("the port 0x1006: I2S, master, 48 kHz, 16 bits, stereo, data line 0", false, M_MOD_DEV_INTERFACE,
+	    m_param("the port 0x1006: I2S, master, 48 kHz, 24 bits (32-bit slots), stereo, data line 0", false, M_MOD_DEV_INTERFACE,
 	    M_PARAM_I2S_CONFIG, &cfg, sizeof(cfg)) &&
 	    m_cmd("the port 0x1006, started", 0, M_OP_START, port, sizeof(port));
 	if (ok) {
@@ -534,7 +547,7 @@ raphael_mi2s_step(void)
 			struct m_i2s cfg_tx = cfg;
 
 			cfg_tx.channel_mode = 2;
-			tx_on = m_param_port("the port 0x1007 (feedback): I2S, 48 kHz, 16 bits, stereo, data line 1", M_PORT_TX, M_MOD_DEV_INTERFACE,
+			tx_on = m_param_port("the port 0x1007 (feedback): I2S, 48 kHz, 24 bits (32-bit slots), stereo, data line 1", M_PORT_TX, M_MOD_DEV_INTERFACE,
 			    M_PARAM_I2S_CONFIG, &cfg_tx, sizeof(cfg_tx)) &&
 			    m_cmd("the port 0x1007, started", 0, M_OP_START, port_tx, sizeof(port_tx)) &&
 			    m_param_port("TFADSP_TX, enabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable)) &&
@@ -549,6 +562,14 @@ raphael_mi2s_step(void)
 				if (tone_gain_set) {
 					/* quiet by default: 4/256 of -20 dBFS; boot-arg tone_gain=N (at most 256), tone_ms, tone_ramp_ms */
 					say("mi2s: the tone follows: %u ms, gain %u/256, rising over %u ms\n", tone_ms, tone_gain_arg, tone_ramp_ms);
+					{
+						thread_t look;
+
+						if (kernel_thread_start(look_thread, NULL, &look) == KERN_SUCCESS) {
+							thread_deallocate(look);
+						}
+					}
+					raphael_tfa_dump("before the tone", say_line);
 					hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
 					m_edges("after the tone", hold);
 				}

@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 4a to 4c done (4c includes the speaker protection chain) (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
+Status: **milestone 4 done: the loudspeaker plays a test tone (a Redmi K20 Pro, 2026-11-07) (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -187,8 +187,21 @@ port (QUAT_MI2S_TX, 0x1007: I2S, 48 kHz, 16 bits, stereo, data line 1 = GPIO 140
 DSP's `TFADSP_TX` module is enabled on it (0x1000b920 = 1) and `TFADSP_RX` is set to *not bypassed* (0x1000b923 = 0), all with status 0; the
 15 start-up messages are delivered and the amplifier starts, the clock running throughout; at the end everything is switched off again.
 
-Next: (d) a stream and a tone, **quiet**: an ADM device path and an ASM stream to port 0x1006 (the flow of `hakios.sound.c`, which
-is the POCO's), a 1 kHz tone starting at a very low level, raised in small steps while someone listens.
+**Sub-step (d), passed on a Redmi K20 Pro, 2026-11-07: THE LOUDSPEAKER PLAYS (heard by the owner).** `adsp_step=12 tfa=1 tfa_tx=1 tone=8000 tone_gain=32
+tone_ramp_ms=1500`: an ADM device path and an ASM stream to port 0x1006 (the flow of `hakios.sound.c`, with the endpoint chosen per
+phone), a 1 kHz tone at 32/256 of -20 dBFS (about -38 dBFS) rising over 1.5 s. 409 periods written and given back, 0 errors, 0 underflows, the
+DSP took 48,134 frames a second; the amplifier's data pin carried the samples and the amplifier stayed engaged, with the DSP's speaker
+protection (TFADSP, fed by the feedback port) in the path.
+
+What it took after the amplifier and the protection were in place (three runs): the first two tones were silent although the data reached the
+pin. The amplifier's registers showed why: it was engaged right after start-up (amplifier enable, PLL and clocks locked, state "operating"), and
+about 50 ms later it dropped out (TDM error flagged, clocks lost). **Android's speaker is 24 bits in 32-bit slots** (`audio_platform_info.xml`:
+`bit_width="24"`), so the interface runs at 3.072 MHz, and the amplifier's container is made for that frame; the 16-bit, 1.536 MHz frame I
+had chosen made it flag an error and shut down. With 24 bits (AFE I2S config `bit_width` 24, bit clock 48,000 x 32 x 2, and the NXP driver told
+`pcm_format` 24) it stays up and plays. Also needed: the un-mute Android's driver does after each start.
+
+Not done yet: iOS's own audio (`/dev/hakios-audio`, as `hakios.sound.c` level 4 does for the POCO) is not routed here, nor the volume control; the
+feedback port stays on only for the length of the test.
 
 **Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
 2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the
