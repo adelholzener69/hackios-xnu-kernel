@@ -1162,7 +1162,23 @@ static uint32_t guard_periods;                  /* periods through the guard */
 #define JITTER_FRAMES           2400            /* 50 ms */
 static bool jitter_primed;
 static uint32_t jitter_primes, jitter_dry, jitter_short;
-static uint32_t ios_gain = 64;                  /* raphael: what iOS plays is cut to this much out of 256 (boot-arg ios_gain) */
+static uint32_t ios_gain = 128;                 /* raphael: the loudest, out of 256 (boot-arg ios_gain); iOS's volume is under it */
+static volatile uint32_t ios_gain_now = 128 * 256;      /* the gain in force, out of 65536: ios_gain and iOS's volume (the watcher keeps it) */
+static volatile bool ios_amp_ready;                     /* the amplifier is up: the feeder plays what iOS wrote */
+
+/* 10^(-r/160) of 65536, for r = 0..47 eighths of a dB: 6 dB (48 eighths) is half */
+static const uint16_t db_eighths[48] = { 65536, 64600, 63677, 62767, 61870, 60986, 60115, 59256, 58409, 57574, 56752, 55941, 55142, 54354, 53577, 52812, 52057, 51313, 50580, 49857, 49145, 48443, 47751, 47068, 46396, 45733, 45080, 44435, 43801, 43175, 42558, 41950, 41350, 40760, 40177, 39603, 39037, 38480, 37930, 37388, 36854, 36327, 35808, 35296, 34792, 34295, 33805, 33322 };
+
+static uint32_t
+volume_gain(uint32_t gain256, uint32_t below_eighths)
+{
+	uint32_t halves = below_eighths / 48, r = below_eighths % 48, g = gain256 * 256;
+
+	if (halves >= 16) {
+		return 0;
+	}
+	return (uint32_t)(((uint64_t)g * db_eighths[r] >> 16) >> halves);
+}
 static volatile bool guard_on;                  /* the amplifiers are on: what the guard lets through is heard */
 
 /* tenths of a dB as text: "-5.7" */
@@ -1209,6 +1225,13 @@ period_fill_ios(unsigned period)
 		 */
 		bool writer_idle = now_us() - last_write_us > 50000;
 
+		if (!ios_amp_ready) {
+			/* the amplifier is off (started when sound comes): what iOS wrote waits in the ring until it is up */
+			available = 0;
+			n = 0;
+			jitter_primed = false;
+		}
+
 		if (!jitter_primed && (available >= JITTER_FRAMES || (writer_idle && available != 0))) {
 			jitter_primed = true;
 			jitter_primes++;
@@ -1239,9 +1262,11 @@ period_fill_ios(unsigned period)
 	silent_frames += PERIOD_FRAMES - n;
 	if (hakios_is_raphael()) {
 		/* the speaker protection is the DSP's (TFADSP); a digital cap of ours on top (boot-arg ios_gain, out of 256) */
-		if (ios_gain < 256) {
+		uint32_t g = ios_gain_now;
+
+		if (g < 65536) {
 			for (uint32_t i = 0; i < 2 * n; i++) {
-				samples[i] = (int16_t)((int32_t)samples[i] * (int32_t)ios_gain / 256);
+				samples[i] = (int16_t)((int64_t)samples[i] * (int64_t)g / 65536);
 			}
 		}
 	} else {
@@ -1314,7 +1339,60 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
  * DSP's TFADSP is the protection here). Runs until the run ends (hakios_sound_dsp_down()).
  */
 extern void raphael_mi2s_close(void);
+extern bool raphael_amp_power(bool on);
 static bool running, taken_down;
+
+/*
+ * raphael: iOS's volume and the amplifier's power. The volume is a gain on the samples (the plug-in says how far under the
+ * loudest iOS wants it, the loudest is ios_gain); the amplifier is started when sound comes (what iOS wrote waits in the ring
+ * until it is up, so nothing is lost) and powered down after ios_amp_idle seconds (default 20) of silence or while iOS's
+ * volume is 0, as the POCO's watcher does for its amplifiers.
+ */
+static void
+raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
+{
+	uint32_t generation = 0, idle_s = 20, starts = 0, stops = 0;
+	uint64_t wanted_at = now_us();
+	bool muted = false;
+
+	PE_parse_boot_argn("ios_amp_idle", &idle_s, sizeof(idle_s));
+	while (!stopping) {
+		uint32_t below, generation_now;
+		bool muted_now, want;
+		uint64_t now = now_us(), sounded = last_sound_us;
+
+		if (hakios_audio_volume(&below, &muted_now, &generation_now) && generation_now != generation) {
+			generation = generation_now;
+			muted = muted_now;
+			ios_gain_now = muted ? 0 : volume_gain(ios_gain, below);
+			say("sound: iOS sets the volume: %s%u.%03u dB under the loudest: gain %u/65536\n", muted ? "muted, " : "", below / 8,
+			    below % 8 * 125, ios_gain_now);
+		}
+		want = !muted && sounded != 0 && now - sounded < 100000;
+		if (want) {
+			wanted_at = now;
+			if (!ios_amp_ready) {
+				say_when("iOS plays: the amplifier is started");
+				if (raphael_amp_power(true)) {
+					ios_amp_ready = true;
+					starts++;
+				} else {
+					say("sound: THE AMPLIFIER DID NOT START\n");
+					sleep_ms(1000);
+				}
+			}
+		} else if (ios_amp_ready && (muted || now - wanted_at > idle_s * 1000000ull)) {
+			ios_amp_ready = false;
+			raphael_amp_power(false);
+			stops++;
+			say_when(muted ? "iOS's volume is 0: the amplifier is powered down" : "silence: the amplifier is powered down");
+		}
+		sleep_ms(5);
+	}
+	say("sound: the watcher stops; the amplifier was started %u times and powered down %u times\n", starts, stops);
+	watcher_runs = false;
+	thread_terminate(current_thread());
+}
 
 bool
 hakios_raphael_ios_start(void)
@@ -1341,6 +1419,12 @@ hakios_raphael_ios_start(void)
 	running = true;
 	stopping = false;
 	feeder_runs = true;
+	ios_amp_ready = true;
+	ios_gain_now = ios_gain * 256;
+	if (kernel_thread_start(raphael_watch_thread, NULL, &feeder) == KERN_SUCCESS) {
+		thread_deallocate(feeder);
+		watcher_runs = true;
+	}
 	if (kernel_thread_start(feeder_thread, NULL, &feeder) != KERN_SUCCESS) {
 		feeder_runs = false;
 		say("sound: no thread for the feeder\n");
@@ -1667,8 +1751,14 @@ hakios_sound_dsp_down(void)
 	}
 }
 
+extern void raphael_tfa_quiesce(void);
+
 void
 hakios_sound_quiesce(void)
 {
+	if (hakios_is_raphael()) {
+		raphael_tfa_quiesce();         /* the amplifier into power-down */
+		return;
+	}
 	hakios_speaker_quiesce();
 }

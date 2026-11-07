@@ -441,6 +441,23 @@ raphael_amp_reset_pulse(void)
 	amp_wait(20);
 }
 
+/* On a panic's way out: abort whatever the engine was doing, and send one write if the bus was ever opened. */
+void
+raphael_amp_panic_write(uint8_t addr, const uint8_t *data, unsigned len)
+{
+	if (!opened) {
+		return;
+	}
+	if (amp_rd(st.se, SE_STATUS) & 1u) {
+		amp_abort();
+	}
+	st.dead = false;
+	st.irq_status = st.irq_last = 0;
+	st.sent = st.got = 0;
+	(void)amp_msg_run(addr, data, len, NULL, 0, false);
+	st.dead = true;
+}
+
 void
 raphael_amp_sleep(unsigned ms)
 {

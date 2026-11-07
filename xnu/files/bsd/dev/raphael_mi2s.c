@@ -12,6 +12,7 @@
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <kern/locks.h>
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <libkern/libkern.h>
@@ -498,6 +499,30 @@ say_line(const char *text)
 static struct {
 	bool pins, clock, rx, tx, tx_enabled, amplifier;
 } up;
+static LCK_GRP_DECLARE(amp_lock_group, "raphael-amp");
+static LCK_MTX_DECLARE(amp_lock, &amp_lock_group);      /* the amplifier is started or stopped by one at a time */
+
+/* The amplifier on (started from its container, the protection messages sent) or off; true if it is as asked. */
+bool
+raphael_amp_power(bool on)
+{
+	bool ok = true;
+
+	lck_mtx_lock(&amp_lock);
+	if (on && !up.amplifier) {
+		ok = raphael_tfa_start(say_line);
+		if (ok) {
+			up.amplifier = true;
+		} else {
+			raphael_tfa_stop(say_line);
+		}
+	} else if (!on && up.amplifier) {
+		raphael_tfa_stop(say_line);
+		up.amplifier = false;
+	}
+	lck_mtx_unlock(&amp_lock);
+	return ok;
+}
 
 /* Everything the step started, stopped in the opposite order; what is not up is left alone. */
 void
@@ -507,12 +532,14 @@ raphael_mi2s_close(void)
 	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * 32 * 2, M_CLK_COUPLE_NO, 0, 0 };
 	uint32_t enable = 0;
 
+	lck_mtx_lock(&amp_lock);
 	if (up.amplifier) {
-		raphael_tfadsp_report();
 		raphael_tfa_stop(say_line);
-		raphael_tfadsp_close();
 		up.amplifier = false;
 	}
+	lck_mtx_unlock(&amp_lock);
+	raphael_tfadsp_report();
+	raphael_tfadsp_close();
 	if (up.tx_enabled) {
 		m_param_port("TFADSP_TX, disabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable));
 		up.tx_enabled = false;
@@ -606,8 +633,7 @@ raphael_mi2s_step(void)
 			m_edges("feedback port running", hold);
 		}
 		if (tfa) {
-			up.amplifier = true;
-			if (raphael_tfa_start(say_line)) {
+			if (raphael_amp_power(true)) {
 				say("mi2s: the amplifier is started\n");
 				if (tone_gain_set) {
 					thread_t look;

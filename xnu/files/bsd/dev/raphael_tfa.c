@@ -117,6 +117,7 @@ dsp_read(uint8_t *result, unsigned length)
 	return raphael_tfadsp_read(result, length);
 }
 
+static uint32_t tfa_debug;       /* boot-arg tfa_debug=1: the amplifier's registers are dumped */
 static const uint8_t *container;
 static uint64_t container_size;
 static bool open_ok;
@@ -135,6 +136,7 @@ raphael_tfa_start(void (*say)(const char *))
 	char line[200];
 	int err;
 
+	PE_parse_boot_argn("tfa_debug", &tfa_debug, sizeof(tfa_debug));
 	if (!raphael_amp_open()) {
 		say("tfa: the I2C bus does not open\n");
 		return false;
@@ -190,12 +192,12 @@ raphael_tfa_start(void (*say)(const char *))
 
 		snprintf(line, sizeof(line), "tfa: un-muted (%d)\n", mute_err);
 		say(line);
-		/* its state over the next two seconds: control 0, status 0x10, 0x11, manager 0x14 */
+		/* boot-arg tfa_debug=1: its state over the next two seconds: control 0, status 0x10, 0x11, manager 0x14 */
 		static const unsigned waits[] = { 5, 20, 75, 150, 250, 500, 1000 };
 		unsigned t = 0;
 
 		raphael_tfa_dump("just after the un-mute", say);
-		for (unsigned i = 0; i < sizeof(waits) / sizeof(waits[0]); i++) {
+		for (unsigned i = 0; tfa_debug && i < sizeof(waits) / sizeof(waits[0]); i++) {
 			uint8_t r0[2] = { 0, 0 }, r10[2] = { 0, 0 }, r11[2] = { 0, 0 }, r14[2] = { 0, 0 };
 
 			raphael_amp_sleep(waits[i]);
@@ -240,6 +242,9 @@ raphael_tfa_dump(const char *when, void (*say)(const char *))
 	char line[260];
 	int n = 0;
 
+	if (!tfa_debug) {
+		return;
+	}
 	n += snprintf(line + n, sizeof(line) - n, "tfa: registers %s:", when);
 	for (unsigned reg = 0; reg < 0x18; reg++) {
 		if (reg == 7 || reg == 10 || reg == 11 || reg == 12 || reg == 13 || reg == 14 || reg == 15) {
@@ -255,4 +260,15 @@ raphael_tfa_dump(const char *when, void (*say)(const char *))
 	}
 	snprintf(line + n, sizeof(line) - n, "\n");
 	say(line);
+}
+
+/* On a panic's way out (one processor, no lock, no sleep): the amplifier into power-down (PWDN, register 0 bit 0). */
+extern void raphael_amp_panic_write(uint8_t addr, const uint8_t *data, unsigned len);
+
+void
+raphael_tfa_quiesce(void)
+{
+	const uint8_t powerdown[3] = { 0x00, 0x00, 0x01 };
+
+	raphael_amp_panic_write(TFA_ADDR, powerdown, sizeof(powerdown));
 }
