@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 4a, 4b, 4c done (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
+Status: **milestone 4a to 4c done (4c includes the speaker protection chain) (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -182,8 +182,13 @@ container's start-up reach the audio DSP's `TFADSP_RX` module (0 refused), and `
 - **the DSP reads memory, not our caches**: without cleaning the lines (`dc civac`) before the command it saw stale data, and refused
   everything longer than a few bytes with "bad parameter". This cost six test runs.
 
-Still missing for the protection: the feedback port (the amplifier's current and voltage sense, `TFADSP_TX` on the TX port 0x1007,
-data line GPIO 140) and the `TFADSP_RX` bypass/enable settings. Next: that, then (d) a stream and a tone, quiet.
+**Sub-step (c3), passed on a Redmi K20 Pro, 2026-11-07** (`adsp_step=12 tfa=1 tfa_tx=1`): the protection chain is complete. The feedback
+port (QUAT_MI2S_TX, 0x1007: I2S, 48 kHz, 16 bits, stereo, data line 1 = GPIO 140) is opened and started beside the playback port, the
+DSP's `TFADSP_TX` module is enabled on it (0x1000b920 = 1) and `TFADSP_RX` is set to *not bypassed* (0x1000b923 = 0), all with status 0; the
+15 start-up messages are delivered and the amplifier starts, the clock running throughout; at the end everything is switched off again.
+
+Next: (d) a stream and a tone, **quiet**: an ADM device path and an ASM stream to port 0x1006 (the flow of `hakios.sound.c`, which
+is the POCO's), a 1 kHz tone starting at a very low level, raised in small steps while someone listens.
 
 **Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
 2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the

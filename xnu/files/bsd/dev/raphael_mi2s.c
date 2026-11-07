@@ -126,6 +126,13 @@ m_cmd(const char *what, uint16_t port, uint32_t opcode, const void *payload, uin
 	return false;
 }
 
+static bool m_param_port(const char *what, uint16_t port, uint32_t module, uint32_t param, const void *data, uint16_t size);
+
+#define M_PORT_TX               0x1007u         /* QUAT_MI2S_TX: the amplifier's current and voltage sense, data line 1 (GPIO 140) */
+#define M_MOD_TFADSP_TX         0x1000b912u
+#define M_PARAM_TFADSP_TX_ENABLE 0x1000b920u
+#define M_PARAM_TFADSP_RX_BYPASS 0x1000b923u
+
 static bool
 m_param(const char *what, bool service, uint32_t module, uint32_t param, const void *data, uint16_t size)
 {
@@ -144,6 +151,23 @@ m_param(const char *what, bool service, uint32_t module, uint32_t param, const v
 	p->size = size;
 	memcpy(packet + 16 + sizeof(*p), data, size);
 	return m_cmd(what, 0, service ? M_OP_SVC_SET_PARAM : M_OP_SET_PARAM_V2, packet, 16 + (uint32_t)sizeof(*p) + size);
+}
+
+/* A parameter of another port (in band, version 2 header). */
+static bool
+m_param_port(const char *what, uint16_t port, uint32_t module, uint32_t param, const void *data, uint16_t size)
+{
+	uint8_t packet[16 + sizeof(struct m_param) + 32];
+	struct m_param *p = (struct m_param *)(packet + 16);
+
+	bzero(packet, sizeof(packet));
+	*(uint16_t *)packet = port;
+	*(uint16_t *)(packet + 2) = (uint16_t)(sizeof(*p) + size);
+	p->module = module;
+	p->param = param;
+	p->size = size;
+	memcpy(packet + 16 + sizeof(*p), data, size);
+	return m_cmd(what, port, M_OP_SET_PARAM_V2, packet, 16 + (uint32_t)sizeof(*p) + size);
 }
 
 static void
@@ -463,8 +487,9 @@ raphael_mi2s_step(void)
 	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * M_BITS * 2, M_CLK_COUPLE_NO, 0, 1 };
 	struct m_i2s cfg = { .version = 1, .bit_width = M_BITS, .channel_mode = 1 /* SD0 */, .mono_stereo = 1 /* stereo */,
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
-	uint16_t port[2] = { M_PORT, 0 };
-	bool ok;
+	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
+	uint32_t tx = 0, enable = 1, bypass = 0;
+	bool ok, tx_on = false;
 
 	if (!hakios_is_raphael()) {
 		return true;
@@ -498,6 +523,19 @@ raphael_mi2s_step(void)
 	if (ok) {
 		m_edges("port running", hold);
 		PE_parse_boot_argn("tfa", &tfa, sizeof(tfa));
+		PE_parse_boot_argn("tfa_tx", &tx, sizeof(tx));
+		if (tfa && tx) {
+			/* the feedback: the same interface, data line 1 (SD1), the DSP's TFADSP_TX module switched on, the protection not bypassed */
+			struct m_i2s cfg_tx = cfg;
+
+			cfg_tx.channel_mode = 2;
+			tx_on = m_param_port("the port 0x1007 (feedback): I2S, 48 kHz, 16 bits, stereo, data line 1", M_PORT_TX, M_MOD_DEV_INTERFACE,
+			    M_PARAM_I2S_CONFIG, &cfg_tx, sizeof(cfg_tx)) &&
+			    m_cmd("the port 0x1007, started", 0, M_OP_START, port_tx, sizeof(port_tx)) &&
+			    m_param_port("TFADSP_TX, enabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable)) &&
+			    m_param_port("TFADSP_RX, not bypassed", M_PORT, M_MOD_TFADSP_RX, M_PARAM_TFADSP_RX_BYPASS, &bypass, sizeof(bypass));
+			m_edges("feedback port running", hold);
+		}
 		if (tfa) {
 			if (raphael_tfa_start(say_line)) {
 				say("mi2s: the amplifier is started; held for %u s with the port running\n", hold);
@@ -507,6 +545,13 @@ raphael_mi2s_step(void)
 			raphael_tfadsp_report();
 			raphael_tfa_stop(say_line);
 			raphael_tfadsp_close();
+		}
+		if (tx_on) {
+			enable = 0;
+			m_param_port("TFADSP_TX, disabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable));
+		}
+		if (tx_on || tx) {
+			m_cmd("the port 0x1007, stopped", 0, M_OP_STOP, port_tx, sizeof(port_tx));
 		}
 		m_cmd("the port 0x1006, stopped", 0, M_OP_STOP, port, sizeof(port));
 	}
