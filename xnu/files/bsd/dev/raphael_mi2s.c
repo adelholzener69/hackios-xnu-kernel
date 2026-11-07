@@ -21,6 +21,7 @@
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_putc(char c);
 
+
 /* said to the loader's log as well, as it happens: the kernel's own log may lose it */
 static int say(const char *format, ...) __printflike(1, 2);
 
@@ -168,10 +169,19 @@ m_edges(const char *when, unsigned secs)
 	    e138, e139);
 }
 
+extern bool raphael_tfa_start(void (*say)(const char *));
+extern void raphael_tfa_stop(void (*say)(const char *));
+
+static void
+say_line(const char *text)
+{
+	say("%s", text);
+}
+
 bool
 raphael_mi2s_step(void)
 {
-	uint32_t hold = 3;
+	uint32_t hold = 3, tfa = 0;
 	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * M_BITS * 2, M_CLK_COUPLE_NO, 0, 1 };
 	struct m_i2s cfg = { .version = 1, .bit_width = M_BITS, .channel_mode = 1 /* SD0 */, .mono_stereo = 1 /* stereo */,
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
@@ -204,7 +214,15 @@ raphael_mi2s_step(void)
 	    m_cmd("the port 0x1006, started", 0, M_OP_START, port, sizeof(port));
 	if (ok) {
 		m_edges("port running", hold);
-		(void)hold;
+		PE_parse_boot_argn("tfa", &tfa, sizeof(tfa));
+		if (tfa) {
+			if (raphael_tfa_start(say_line)) {
+				say("mi2s: the amplifier is started; held for %u s with the port running\n", hold);
+				delay_for_interval(hold * 1000, NSEC_PER_MSEC);
+				m_edges("port and amplifier running", hold);
+			}
+			raphael_tfa_stop(say_line);
+		}
 		m_cmd("the port 0x1006, stopped", 0, M_OP_STOP, port, sizeof(port));
 	}
 	clk.enable = 0;

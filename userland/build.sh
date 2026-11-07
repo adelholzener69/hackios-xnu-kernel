@@ -441,6 +441,7 @@ done
 if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
+	[ -f ../fw-audio/mono.cnt ] && install -m 0644 ../fw-audio/mono.cnt root/fw/    # the speaker amplifier's container (raphael)
 fi
 # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
 # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
@@ -598,6 +599,7 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	if [ -f ../fw-audio/adsp.mdt ]; then
 		mkdir -p sysroot/fw
 		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] sysroot/fw/
+		[ -f ../fw-audio/mono.cnt ] && cp ../fw-audio/mono.cnt sysroot/fw/    # the speaker amplifier's container (raphael)
 	fi
 	# MPSS firmware is much too large for the small boot image. Keep it in the system APFS,
 	# only when explicitly requested, after checking every loadable segment against this DTB.

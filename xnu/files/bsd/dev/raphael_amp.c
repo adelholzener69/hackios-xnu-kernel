@@ -179,7 +179,7 @@ static int
 amp_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx,
     unsigned nr, bool stretch)
 {
-	if (st.dead || nt > 3 || nr > 90 || (nt && nr) || (!nt && !nr)) {
+	if (st.dead || nt > 600 || nr > 600 || (nt && nr) || (!nt && !nr)) {
 		return EIO;
 	}
 	if (!amp_wait_clear(st.se, SE_STATUS, 1u)) {
@@ -211,14 +211,20 @@ amp_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx,
 			}
 			break;
 		}
-		if (nt && !st.sent && (irq & SE_TX_WM_IRQ)) {
-			uint32_t word = 0;
-			for (unsigned j = 0; j < nt; ++j) {
-				word |= (uint32_t)tx[j] << (8u * j);
+		if (nt && st.sent < nt && (irq & SE_TX_WM_IRQ)) {
+			/* fill the FIFO (16 words of 4 bytes) as far as it has room; the last word ends the watermark */
+			unsigned room = 16u - (amp_rd(st.se, SE_TX_COUNT) & 0xfffffffu);
+			while (room-- && st.sent < nt) {
+				uint32_t word = 0;
+				for (unsigned j = 0; j < 4 && st.sent < nt; ++j) {
+					word |= (uint32_t)tx[st.sent++] << (8u * j);
+				}
+				amp_wr(st.se, SE_TX, word);
 			}
-			amp_wr(st.se, SE_TX, word);
-			st.sent = nt;
-			amp_wr(st.se, SE_TX_WM, 0);
+			if (st.sent >= nt) {
+				amp_wr(st.se, SE_TX_WM, 0);
+			}
+			amp_wr(st.se, SE_IRQ_CLR, SE_TX_WM_IRQ);
 		}
 		uint32_t count = amp_rd(st.se, SE_RX_COUNT) & 0x1ffffffu;
 		if (count > 64 || count > (nr - st.got + 3u) / 4u) {
@@ -398,6 +404,66 @@ amp_ids(const char *when)
 	int e0 = amp_reg(0x00, &r00), e1 = amp_reg(0x01, &r01), e3 = amp_reg(0x03, &r03);
 	printf("raphael-amp: %s: reg0=%#06x(%d) reg1=%#06x(%d) id(reg3)=%#06x(%d)\n",
 	    when, r00, e0, r01, e1, r03, e3);
+}
+
+/* ---- what the amplifier driver (raphael_tfa.c) uses ------------------------------------------------- */
+
+static bool opened;
+
+/* Map, clock and set up the serial engine and its two pins, once. */
+bool
+raphael_amp_open(void)
+{
+	if (opened) {
+		return !st.dead;
+	}
+	st.gcc = ml_io_map(0x00100000u, 0x60000);
+	st.gpio = ml_io_map(0x03d00000u, 0x90000);
+	st.se = ml_io_map(0x00884000u, 0x4000);
+	if (!st.gcc || !st.gpio || !st.se || !amp_clocks() || !amp_se_init()) {
+		printf("raphael-amp: cannot open the bus\n");
+		st.dead = true;
+		return false;
+	}
+	amp_gpio(114, 1, 0, 0, false, false);
+	amp_gpio(115, 1, 0, 0, false, false);
+	opened = true;
+	return true;
+}
+
+/* The amplifier's reset line (GPIO 59): the NXP driver pulses it high, then low. */
+void
+raphael_amp_reset_pulse(void)
+{
+	amp_gpio(59, 0, 0, 0, true, true);
+	amp_wait(5);
+	amp_gpio(59, 0, 0, 0, true, false);
+	amp_wait(20);
+}
+
+void
+raphael_amp_sleep(unsigned ms)
+{
+	amp_wait(ms);
+}
+
+int
+raphael_amp_write(uint8_t addr, const uint8_t *data, unsigned len)
+{
+	st.irq_status = st.irq_last = 0;
+	st.sent = st.got = 0;
+	return amp_msg_run(addr, data, len, NULL, 0, false);
+}
+
+int
+raphael_amp_read(uint8_t addr, uint8_t reg, uint8_t *data, unsigned len)
+{
+	int err = amp_msg(addr, &reg, 1, NULL, 0, true);
+
+	if (err) {
+		return err;
+	}
+	return amp_msg(addr, NULL, 0, data, len, false);
 }
 
 static void
