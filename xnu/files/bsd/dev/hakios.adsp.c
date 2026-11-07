@@ -2228,6 +2228,7 @@ glink_pump(void)
 						channel->their_intents[n].in_use = false;
 						channel->their_intents[n].size = words[0];
 						channel->their_intents[n].id = words[1];
+						printf("adsp: glink: the DSP offers intent %u of %u bytes on its channel %u\n", words[1], words[0], message.param1);
 						break;
 					}
 				}

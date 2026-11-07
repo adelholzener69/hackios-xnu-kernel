@@ -205,9 +205,11 @@ static unsigned tfadsp_sent, tfadsp_refused, tfadsp_read;
 #define M_RSP_MAP               0x000100ebu
 #define M_OP_UNMAP              0x000100ecu
 #define M_POOL_SHMEM8_4K        3u
-#define M_INBAND_MAX            384u
+#define M_INBAND_BUFFER         1024u
+static uint32_t inband_max = 384;           /* boot-arg tfa_inband=N: the longest message sent in band (at most 1024) */
 
 static int tfadsp_version = 3;
+static uint32_t tfadsp_force_outband;      /* boot-arg tfa_oob=1: every message through memory (a test) */
 static uintptr_t space_va;
 static uint64_t space_dsp;
 static uint32_t space_bytes, space_handle;
@@ -215,6 +217,16 @@ static bool space_held, space_mapped;
 
 extern bool hakios_audio_dsp_memory(uintptr_t *memory, uint64_t *dsp_address, uint32_t *bytes);
 extern void hakios_audio_dsp_memory_put(void);
+
+/* the DSP reads and writes memory, not our caches: clean (and invalidate) the lines before it looks, and after it has written */
+static void
+tfadsp_flush(void)
+{
+	for (uintptr_t line = space_va; line < space_va + space_bytes; line += 64) {
+		__asm__ volatile ("dc civac, %0" : : "r" (line) : "memory");
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
 
 static bool
 tfadsp_space(void)
@@ -242,6 +254,7 @@ tfadsp_space(void)
 	map.property = 0;
 	map.low = (uint32_t)space_dsp;
 	map.high = (uint32_t)(space_dsp >> 32);
+	space_bytes = 4096;                    /* one page, as Android maps for this */
 	map.size = space_bytes;
 	if (!hakios_adsp_apr(M_AFE, 0, 0, M_OP_MAP, &map, sizeof(map), M_WAIT_MS, &a) || a.opcode != M_RSP_MAP) {
 		say("mi2s: the AFE did not map our memory: %s %#x\n", a.opcode == M_RESULT ? "status" : "opcode",
@@ -250,7 +263,8 @@ tfadsp_space(void)
 	}
 	space_handle = a.words[0];
 	space_mapped = true;
-	say("mi2s: the AFE has mapped it: handle %#x\n", space_handle);
+	say("mi2s: the AFE has mapped it: handle %#x (the answer: %u bytes, %#x %#x %#x)\n", space_handle, a.length, a.words[0], a.words[1],
+	    a.words[2]);
 	return true;
 }
 
@@ -277,10 +291,10 @@ raphael_tfadsp_close(void)
 static bool
 tfadsp_set(int version, const char *message, unsigned length, struct hakios_apr_answer *a)
 {
-	uint8_t packet[24 + sizeof(struct m_param3) + M_INBAND_MAX];
+	uint8_t packet[24 + sizeof(struct m_param3) + M_INBAND_BUFFER];
 	unsigned padded = (length + 3u) & ~3u;
 	unsigned header = version == 3 ? (unsigned)sizeof(struct m_param3) : (unsigned)sizeof(struct m_param);
-	bool inband = padded <= M_INBAND_MAX;
+	bool inband = padded <= inband_max && !tfadsp_force_outband;
 	uint8_t *param;
 	unsigned command_bytes = version == 3 ? 20 : 16;
 	uint64_t address = 0;
@@ -313,6 +327,9 @@ tfadsp_set(int version, const char *message, unsigned length, struct hakios_apr_
 		p->size = (uint16_t)padded;
 	}
 	memcpy(param + header, message, length);
+	if (!inband) {
+		tfadsp_flush();
+	}
 	if (version == 3) {
 		*(uint16_t *)packet = M_PORT;
 		*(uint32_t *)(packet + 4) = (uint32_t)address;
@@ -341,7 +358,10 @@ raphael_tfadsp_write(const char *message, unsigned length)
 	say("mi2s: TFADSP message %u: %u bytes, %02x %02x %02x %02x %02x %02x\n", tfadsp_sent, length, (uint8_t)message[0],
 	    (uint8_t)message[1], (uint8_t)message[2], (uint8_t)message[3], (uint8_t)message[4], (uint8_t)message[5]);
 	for (;;) {
-		sent = tfadsp_set(tfadsp_version, message, length, &a);
+		/* (the DSP takes the in-band message with the version 3 header; through memory the version 2 command works) */
+		bool outband = ((length + 3u) & ~3u) > inband_max || tfadsp_force_outband;
+
+		sent = tfadsp_set(outband ? 2 : tfadsp_version, message, length, &a);
 		if (sent && a.opcode == M_RESULT && a.words[1] == 0) {
 			if (tfadsp_sent == 1) {
 				say("mi2s: the DSP takes TFADSP messages with parameter header version %d\n", tfadsp_version);
@@ -349,12 +369,16 @@ raphael_tfadsp_write(const char *message, unsigned length)
 			delay_for_interval(5, NSEC_PER_MSEC);      /* (Android waits 2 ms after each) */
 			return 0;
 		}
-		if (tfadsp_version == 3 && tfadsp_sent == 1 && sent && a.opcode == M_RESULT && a.words[1] != 0) {
+		if (tfadsp_version == 3 && tfadsp_sent == 1 && !outband && sent && a.opcode == M_RESULT && a.words[1] != 0) {
 			say("mi2s: version 3 refused (status %u); trying version 2\n", a.words[1]);
 			tfadsp_version = 2;
 			continue;
 		}
 		tfadsp_refused++;
+		if (sent) {
+			say("mi2s: the answer: opcode %#x, %u bytes: %#x %#x %#x %#x\n", a.opcode, a.length, a.words[0], a.words[1], a.words[2],
+			    a.words[3]);
+		}
 		say("mi2s: TFADSP message %u (%u bytes, %02x %02x %02x): %s %#x\n", tfadsp_sent, length, (uint8_t)message[0],
 		    (uint8_t)message[1], (uint8_t)message[2], !sent ? "not sent / no answer, opcode" :
 		    a.opcode == M_RESULT ? "REFUSED, status" : "unexpected opcode", !sent ? a.opcode : a.opcode == M_RESULT ? a.words[1] : a.opcode);
@@ -378,7 +402,7 @@ raphael_tfadsp_read(uint8_t *result, unsigned length)
 	}
 	bzero((void *)space_va, header + padded);
 	bzero(packet, sizeof(packet));
-	__asm__ volatile ("dsb sy" ::: "memory");
+	tfadsp_flush();
 	*(uint16_t *)packet = M_PORT;
 	if (tfadsp_version == 3) {
 		struct m_param3 *p = (struct m_param3 *)(packet + 16);
@@ -411,7 +435,7 @@ raphael_tfadsp_read(uint8_t *result, unsigned length)
 		    "no answer / opcode", a.opcode == M_RESULT ? a.words[1] : a.opcode);
 		return 1;
 	}
-	__asm__ volatile ("dsb sy" ::: "memory");
+	tfadsp_flush();
 	memcpy(result, (const uint8_t *)space_va + header, length);
 	return 0;
 }
@@ -446,6 +470,11 @@ raphael_mi2s_step(void)
 		return true;
 	}
 	PE_parse_boot_argn("mi2s_hold", &hold, sizeof(hold));
+	PE_parse_boot_argn("tfa_oob", &tfadsp_force_outband, sizeof(tfadsp_force_outband));
+	PE_parse_boot_argn("tfa_inband", &inband_max, sizeof(inband_max));
+	if (inband_max > M_INBAND_BUFFER) {
+		inband_max = M_INBAND_BUFFER;
+	}
 	gpio = ml_io_map(0x03d00000u, 0x90000);
 	if (!gpio) {
 		say("mi2s: cannot map the pins\n");
