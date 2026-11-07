@@ -3,5 +3,7 @@
 /redwood/bin/cpu_test
 /redwood/bin/cpu_test 45 &
 /redwood/bin/rwtouch wait 20
-/redwood/bin/gl_test 8 1080 2340
+# GPU self-test: draws a triangle on the screen for 8 s and checks the pixels read back. Off by default;
+# remove the "# " to run it when debugging the GPU.
+# /redwood/bin/gl_test 8 1080 2340
 /bin/ps -A

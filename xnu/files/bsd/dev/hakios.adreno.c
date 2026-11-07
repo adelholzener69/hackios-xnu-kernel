@@ -3762,6 +3762,9 @@ void *raphael_display_back(bool preserve);
 bool raphael_display_present(void);
 void raphael_display_quiesce(void);
 int raphael_display_scan_counter(uint32_t *line);
+void raphael_display_dump_mixer(void);
+void raphael_display_set_brightness(uint32_t permille);
+static uint32_t raphael_brightness_permille = 1000;
 
 int
 raphael_display_init(uint32_t width, uint32_t height, uint32_t stride)
@@ -3902,6 +3905,152 @@ raphael_display_quiesce(void)
 	}
 	loader_set_framebuffer(0x9c000000);
 	raphael_flipping = false;
+}
+
+/*
+ * What the firmware left in the scanout pipeline, read only: CTL0 (the layers on the mixer and the
+ * flush register), mixer LM0 (its blend stages start at +0x20, 0x18 apart: op, foreground alpha,
+ * background alpha) and the VIG0 pipe. Offsets are the device tree's qcom,sde-ctl-off,
+ * qcom,sde-mixer-off, qcom,sde-mixer-blend-op-off and qcom,sde-sspp-off.
+ */
+void
+raphael_display_dump_mixer(void)
+{
+	static const struct {
+		uint32_t base, words;
+		const char *name;
+	} blocks[] = { { 0x2000, 24, "CTL0" }, { 0x45000, 40, "LM0" }, { 0x5000, 12, "VIG0" } };
+
+	if (!raphael_flipping) {
+		printf("raphael-display: mixer dump: the display is not flipping\n");
+		return;
+	}
+	for (unsigned b = 0; b < sizeof(blocks) / sizeof(blocks[0]); b++) {
+		for (uint32_t w = 0; w < blocks[b].words; w += 4) {
+			vm_offset_t p = raphael_mdp + blocks[b].base + w * 4;
+
+			printf("raphael-display: %s +%03x: %08x %08x %08x %08x\n", blocks[b].name, w * 4, rd(p), rd(p + 4),
+			    rd(p + 8), rd(p + 12));
+		}
+	}
+	/*
+	 * The DSI controller that feeds the panel (read only). DSI0 is at 0x0ae94000 on SM8150 (Qualcomm's
+	 * downstream tree); +0x00 is DSI_HW_VERSION. The registers that send a command to the panel
+	 * (DMA command mode control, buffer address and length, software trigger, interrupt status) are
+	 * what a brightness command (DCS 0x51) would go through; this only reads them.
+	 */
+	{
+		static vm_offset_t dsi;
+
+		if (dsi == 0) {
+			dsi = ml_io_map(0x0ae94000, 0x400);
+		}
+		printf("raphael-display: DSI0 hw version %08x ctrl %08x status %08x\n", rd(dsi + 0x00), rd(dsi + 0x04),
+		    rd(dsi + 0x08));
+		for (uint32_t off = 0x50; off < 0x120; off += 16) {
+			printf("raphael-display: DSI0 +%03x: %08x %08x %08x %08x\n", off, rd(dsi + off), rd(dsi + off + 4),
+			    rd(dsi + off + 8), rd(dsi + off + 12));
+		}
+	}
+}
+
+/*
+ * The panel's own brightness (boot-arg brightness_dcs=1): the Samsung EA8076 takes DCS "set display
+ * brightness" (0x51) with an 11-bit level, 2..2047 (dt: qcom,mdss-dsi-bl-pmic-control-type
+ * "bl_ctrl_dcs", bl-min-level 2, bl-max-level 0x7ff), high bits first. The command goes through the
+ * DSI0 controller's DMA command engine as Qualcomm's driver does it:
+ *   packet header word (little endian): byte 0, 1 = word count (data 1, 2 for a short packet),
+ *   byte 2 = data type | virtual channel << 6, byte 3 = flags (bit 7 last, bit 6 long packet),
+ *   then the payload, padded to 4 bytes; the hardware makes the ECC and the CRC;
+ *   DSI_COMMAND_MODE_DMA_CTRL 0x3c (low power), DSI_DMA_CMD_OFFSET 0x48 (address), DSI_DMA_CMD_LENGTH 0x4c,
+ *   DSI_TRIG_CTRL 0x80 (bits 7:4 DMA trigger, 4 = software), DSI_CMD_MODE_DMA_SW_TRIGGER 0x90.
+ * The command buffer is in the firmware's 36 MiB display region (0x9c000000 + 0x2400000), after the three
+ * scanout buffers, where the display hardware can read. Everything is logged for the first sends.
+ */
+#define DSI_PHYS        0x0ae94000ull
+#define DSI_CMD_PA      0x9de00000ull
+#define DSI_DMA_CTRL    0x03c
+#define DSI_DMA_OFFSET  0x048
+#define DSI_DMA_LENGTH  0x04c
+#define DSI_TRIG_CTRL   0x080
+#define DSI_DMA_TRIGGER 0x090
+
+static void
+raphael_dsi_regs(const char *when)
+{
+	vm_offset_t dsi = ml_io_map(DSI_PHYS, 0x400);
+
+	printf("raphael-dsi: %s: ctrl %08x status %08x dmactrl %08x offset %08x length %08x trig %08x dmatrig %08x "
+	    "int %08x ackerr %08x\n", when, rd(dsi + 0x04), rd(dsi + 0x08), rd(dsi + DSI_DMA_CTRL), rd(dsi + DSI_DMA_OFFSET),
+	    rd(dsi + DSI_DMA_LENGTH), rd(dsi + DSI_TRIG_CTRL), rd(dsi + DSI_DMA_TRIGGER), rd(dsi + 0x110), rd(dsi + 0x068));
+}
+
+static void
+raphael_dsi_send(const uint8_t *packet, uint32_t length)
+{
+	static vm_offset_t dsi, cmd;
+	uint32_t trig, dma_ctrl;
+
+	if (dsi == 0) {
+		dsi = ml_io_map(DSI_PHYS, 0x400);
+		cmd = ml_io_map(DSI_CMD_PA, 0x1000);
+	}
+	memcpy((void *)cmd, packet, length);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	trig = rd(dsi + DSI_TRIG_CTRL);
+	dma_ctrl = rd(dsi + DSI_DMA_CTRL);
+	wr(dsi + DSI_TRIG_CTRL, (trig & ~(0xfu << 4)) | (4u << 4));
+	wr(dsi + DSI_DMA_CTRL, 0x10000000u | (1u << 26));
+	wr(dsi + DSI_DMA_OFFSET, (uint32_t)DSI_CMD_PA);
+	wr(dsi + DSI_DMA_LENGTH, length & 0xffffff);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	wr(dsi + DSI_DMA_TRIGGER, 1);
+	sleep_ms(5);
+	wr(dsi + DSI_DMA_CTRL, dma_ctrl);
+	wr(dsi + DSI_TRIG_CTRL, trig);
+}
+
+static void
+raphael_dsi_brightness(uint32_t permille)
+{
+	static unsigned sends;
+	uint32_t dbv = 2 + (permille * permille * 2045u) / 1000000u;     /* 2..2047, a perceptual (squared) curve */
+	uint8_t packet[8] = { 0x03, 0x00, 0x39, 0xc0, 0x51, (uint8_t)((dbv >> 8) & 7), (uint8_t)(dbv & 0xff), 0x00 };
+
+	if (sends < 4) {
+		raphael_dsi_regs("before");
+	}
+	raphael_dsi_send(packet, sizeof(packet));
+	if (sends < 4) {
+		raphael_dsi_regs("after");
+		printf("raphael-dsi: sent DCS 0x51 %02x %02x (level %u of 2047)\n", packet[5], packet[6], dbv);
+	}
+	sends++;
+}
+
+/* Brightness in permille, from kern.hakios.brightness: recorded and logged, and sent to the panel with brightness_dcs=1. */
+void
+raphael_display_set_brightness(uint32_t permille)
+{
+	static bool dumped;
+	static int dcs = -1;
+
+	raphael_brightness_permille = permille;
+	printf("raphael-display: brightness %u/1000 requested (display %s)\n", permille,
+	    raphael_flipping ? "flipping" : "not flipping");
+	if (!dumped) {
+		dumped = true;
+		raphael_display_dump_mixer();
+	}
+	if (dcs < 0) {
+		uint32_t on = 0;
+
+		dcs = PE_parse_boot_argn("brightness_dcs", &on, sizeof(on)) && on == 1;
+		printf("raphael-dsi: brightness_dcs %s\n", dcs ? "on" : "off");
+	}
+	if (dcs && raphael_flipping) {
+		raphael_dsi_brightness(permille);
+	}
 }
 
 static void

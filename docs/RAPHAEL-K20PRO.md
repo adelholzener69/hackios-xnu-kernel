@@ -18,7 +18,7 @@ this repository or ever should be** (see [Safety](#safety-and-legal)).
 | CPU | 7 of 8 cores (core 0 stays with the loader), frequency scaling |
 | Wi-Fi | yes (upstream verified 5 GHz WPA3), but slow to find networks, and it will not reconnect after you switch Wi-Fi off and on (restart the session) |
 | Battery level and charging state | yes, read-only, taken from the phone's own firmware |
-| Brightness slider | **no** (planned) |
+| Brightness slider | yes: the panel's own brightness (see below) |
 | Sound, Bluetooth, cellular, cameras, torch, haptics | **no** |
 | Saving anything | **no**: RAM only, every start is a fresh iOS |
 
@@ -121,10 +121,11 @@ fastboot getvar product            # must say: xnuloader  (wait a few seconds)
 export XL_KERNEL="$XNU_SRC/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837" XL_RAMDISK="$PWD/userland/root.apfs"
 export XL_SECS=600 XL_FOLLOW=15 XL_FOLLOW_KEEP=1
 WIFI_ARGS="wifi_step=15 wifi_lx=2 wifi_ba=1 wifi_wide=1 wifi_new=99 wifi_pause=0 wifi_ask=1 wifi_bdf=$WIFI_BDF wifi_smmu=2 wifi_keep=1 wifi_wait=10 wifi_listen=15"
-export XL_CMDLINE="gic_timer_irq=19 bootcpu=7 cpus=8 touchscreen=1 buttons=1 cpufreq=1 gpu=1 fb_scan=1 modem=0 adsp=0 ufs=0 ufs_write=0 var_store=0 root_apfs=md0,c=1 battery=1 $WIFI_ARGS"
+export XL_CMDLINE="gic_timer_irq=19 bootcpu=7 cpus=8 touchscreen=1 buttons=1 cpufreq=1 gpu=1 fb_scan=1 modem=0 adsp=0 ufs=0 ufs_write=0 var_store=0 root_apfs=md0,c=1 battery=1 brightness=1 brightness_dcs=1 $WIFI_ARGS"
 ./xl run
 ```
-You should see a small triangle (the GPU self-test) and then the iOS home screen. Connect to Wi-Fi in
+You should see the iOS home screen after about a minute and a half (the GPU self-test triangle that older
+builds drew is switched off; to bring it back, uncomment the `gl_test` line in `devices/raphael/raphael.jobs`). Connect to Wi-Fi in
 Settings (give it a minute to list networks). For no Wi-Fi, drop `$WIFI_ARGS` and add `wifi=0`.
 The session ends by itself after 10 minutes (`XL_SECS`); `./xl stop` ends it early.
 
@@ -172,3 +173,15 @@ yet been run end to end as scripts. Please report anything that differs.
 userland, the Wi-Fi and GPU work), [Project Silicium / Mu-Silicium](https://github.com/Project-Silicium/Mu-Silicium)
 (UEFI), Apple's open-source XNU, and TWRP. This branch adds the fixes and scripts that made it boot on a
 different firmware build.
+
+## How brightness works here (for developers)
+
+iOS's slider ends in `-[BKDisplayBrightnessController setBrightnessLevel:reason:options:]` inside
+`backboardd`. With `brightness=1`, `userland/src/inject.c` hooks it (only if its type encoding matches
+iOS 16.5), keeps iOS's own state, and writes the level in permille to `kern.hakios.brightness`. It also
+answers "available" for `isBrightnessLevelControlAvailable` and returns the last level from
+`brightnessLevel`, because with no backlight service iOS otherwise leaves the slider dead. With
+`brightness_dcs=1` the kernel (`raphael_dsi_brightness` in `xnu/files/bsd/dev/hakios.adreno.c`) sends DCS
+`0x51` (an 11-bit level, 2 to 2047, on a squared curve) through the DSI0 controller's DMA command engine.
+The command buffer lives in the firmware's display region after the scanout buffers
+(`0x9de00000`). `kern.hakios.display_dump=1` logs the display mixer's registers, read only.

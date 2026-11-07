@@ -16,7 +16,7 @@ stands:
 | GPU (OpenGL ES) | yes (Adreno 642L) | **yes** (Adreno 640) | done; Metal is not available on either |
 | Wi-Fi | yes (WCN6750) | **yes** (WCN3990, ath10k) | works; slow to find networks; no reconnect after toggling Wi-Fi (known upstream bug) |
 | Battery level, charging state | yes | **yes** | read-only, via the firmware's Qualcomm charger drivers (commit `84647ba`) |
-| **Brightness control** | not found in the repo | **no** | hook the iOS brightness change, pass it to the kernel, dim at scanout (software), later panel commands |
+| Brightness control | not found in the repo | **yes** (panel's own brightness) | done: the slider's level is caught in `backboardd`, passed to the kernel (`kern.hakios.brightness`) and sent to the Samsung EA8076 as DCS `0x51` through the DSI controller. Boot arguments `brightness=1 brightness_dcs=1`. Auto-brightness and the ambient-light sensor are not supported |
 | **Sound** | yes (DSP + Awinic amps) | **no** | speaker-only path first: boot the audio DSP (older APR protocol, not GPR), initialise the NXP TFA98xx amplifiers (needs your phone's amp config); headphones and microphones need the SLIMbus codec (WCD9341), which is much harder |
 | **Bluetooth** | not enabled | **no** | WCN3990 over UART; the open problem is iOS's Bluetooth stack, which no HakiOS port provides |
 | Storage (keep data between boots) | yes (UFS) | **no** | storage driver for raphael |
@@ -26,11 +26,10 @@ stands:
 
 ## Order of work
 
-1. Brightness (software dimming first, since it is self-contained and can be tested in one session).
-2. Speaker-only sound.
-3. Haptics and torch.
-4. Storage persistence.
-5. Cellular, then cameras.
+1. Speaker-only sound.
+2. Haptics and torch.
+3. Storage persistence.
+4. Cellular, then cameras.
 
 Bluetooth stays a research item until someone has an approach for iOS's side.
 

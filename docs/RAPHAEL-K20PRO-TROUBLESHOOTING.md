@@ -28,14 +28,21 @@ the 2.5 GB upload; retry once the link is stable.
 
 ## `xl: loader did not come up on USB (state: fastboot)` or `xl: a run is in progress`
 `xl` allows one run at a time. A run lasts `XL_SECS` (600 s by default) and the phone answers as
-`fastboot` while it runs. Do not start a second `./xl run` while one is active, and after `./xl stop`
-wait until `./xl state` says `loader` several times in a row. If `xl` cannot find the loader it builds
-and boots a fresh image itself; make sure the device settings (`UEFI_TARGET=raphael` etc.) are the ones
-`devices/raphael/kit/build-uefi-image.sh` uses, so it never builds an image for another phone.
+`fastboot` while it runs. Do not start a second `./xl run` while one is active. If `xl` cannot find the
+loader it builds and boots a fresh image itself; make sure the device settings (`UEFI_TARGET=raphael`
+etc.) are the ones `devices/raphael/kit/build-uefi-image.sh` uses, so it never builds an image for
+another phone.
+
+## After a run, do not reuse the loader: restart the phone
+Once a run has returned (or been stopped), the loader is not reliable any more: starting a new upload
+right away failed and froze the phone, and a loader left idle for a long time was found reset to the
+stock bootloader. Between sessions, hold Power + Volume Down to restart into fastboot, then repeat
+`fastboot boot` -> `./xl ramdisk` -> `./xl run`. (Do this even if `./xl state` still says `loader`.)
 
 ## The phone froze, or I rebooted it
 The 2.5 GB image lives in RAM, so after any reboot start again from `fastboot boot` and upload it
-again (about 100 s). Do not reboot during a run.
+again (about 100 s). Do not reboot during a run. Start the upload and the run soon after the loader
+comes up; do not leave the loader sitting idle.
 
 ## Wi-Fi shows no networks for a while
 Expected: the driver is early. Give it a minute or two. After turning Wi-Fi off and on it often fails
