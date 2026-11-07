@@ -1427,13 +1427,14 @@ static bool running, taken_down;
  * raphael: iOS's volume and the amplifier's power. The volume is a gain on the samples (the plug-in says how far under the
  * loudest iOS wants it, the loudest is ios_gain); the amplifier is started when sound comes (what iOS wrote waits in the ring
  * until it is up, so nothing is lost) and powered down after ios_amp_idle seconds of silence.
- * Powering down (an opt-in: ios_amp_idle=N seconds) is NOT WORKING YET, so it is off by default (ios_amp_idle=0: the amplifier
- * stays on): after the first power-down the DSP no longer plays through the restarted amplifier (kernel-only restarts, with the stream restarted too, are fine).
+ * ios_amp_idle=N sets the seconds (default 30; 0: the amplifier stays on). Sound that comes while it is off waits in the ring (about
+ * half a second of delay for the first sound); old silence in the ring is thrown away so that the next sound is not turned away at a full
+ * ring (that, not the amplifier, was what once kept it silent after the first power-down).
  */
 static void
 raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
 {
-	uint32_t generation = 0, idle_s = 0, starts = 0, stops = 0, ios_debug = 0;
+	uint32_t generation = 0, idle_s = 30, starts = 0, stops = 0, ios_debug = 0;
 	uint64_t last_debug_us = 0;
 	uint64_t wanted_at = now_us();
 	bool muted = false;

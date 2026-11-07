@@ -216,14 +216,18 @@ came out of the loudspeaker.
 - everything is stopped in order when the run ends (amplifier, feedback, ports, clock, pins); on a kernel panic the amplifier is put into
   power-down (`hakios_sound_quiesce`).
 
-**The amplifier stays on for the whole run.** An idle power-down (`ios_amp_idle=N` seconds: the amplifier is powered down after N seconds of
-silence and started again, with the protection messages, when sound comes; what iOS wrote waits in the ring meanwhile) is built but **does not
-work yet**: the first sound after the first power-down is heard, the next ones are not, although the kernel sends the samples (ring full,
-gain right, peaks of the expected size), the amplifier's registers show it engaged, and the DSP accepts all the protection messages. The same
-power-cycle in the kernel-only tone test (`tone_repeat=4`, where the audio stream is restarted each time) is fine, so the DSP side loses
-the amplifier when only the amplifier is cycled under a running stream. Not understood; leaving the amplifier on costs a little battery.
-(Two bugs on the way, for the record: the volume table held 65536 in a 16-bit field, which made the gain 0; and the status registers show
-nothing wrong in the failing case, which is why a status line, `ios_debug=1`, and the restart test exist.)
+**The amplifier powers down when idle and wakes for the next sound** (`ios_amp_idle=N`, default 30 seconds; 0 keeps it on). Sound that comes while
+it is off waits in the ring (about half a second of delay for the first sound after an idle spell) while the NXP start-up runs and the
+protection messages are sent again. This had a long detour: after the first power-down every sound was silent, although the samples reached the DSP, the
+amplifier's registers looked right and the DSP accepted every message. The cause was not the amplifier at all but the ring buffer in front of the
+DSP: while the amplifier was off the feeder stopped consuming, the ring stayed full of iOS's trailing silence (iOS keeps writing zeros for a while after
+a sound), and the next sound was turned away at the door, so the watcher, which looks for sound to wake the amplifier, never saw it. Now old silence in the ring is
+thrown away while the amplifier is off, and sound that does not fit still counts as sound. (The tools that found it: `ios_debug=1`, a status line twice a second
+with the ring, the gain, the peak sent and the amplifier's sense registers 0x16/0x17, which are non-zero only while it really drives the speaker; `tone_beeps=N` /
+`beeps_variant`, beeps with the amplifier cycled under a running stream; `ios_selftest=N`, the whole iOS path fed by a kernel thread. Two bugs on the way: the volume
+table held 65536 in a 16-bit field, which made the gain 0; and the status registers showed nothing wrong in the failing case.)
+
+On the ringer: Settings' Ringtone and Alert Volume slider changes the ringtone preview, and the volume buttons change it only if "Change with Buttons" is on, as on any iPhone.
 
 **Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
 2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the
@@ -240,7 +244,7 @@ e.g. `adb pull` in TWRP with the vendor partition mounted, or from the stock ROM
 adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1
 ```
 
-Optional: `ios_gain=N` (out of 256, default 128) caps the loudest level; `tone=MS tone_gain=N tone_ramp_ms=MS tone_repeat=N` (with
+Optional: `ios_gain=N` (out of 256, default 128) caps the loudest level; `ios_amp_idle=N` is the idle power-down in seconds (default 30, 0 = never); `tone=MS tone_gain=N tone_ramp_ms=MS tone_repeat=N` (with
 `adsp_step=12 tfa=1 tfa_tx=1`, no `ios_audio`) plays a quiet test tone from the kernel alone (no iOS, no 2.4 GB system image);
 `tfa_debug=1` dumps the amplifier's registers; `ios_debug=1` says what the feeder does twice a second.
 
