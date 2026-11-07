@@ -471,6 +471,7 @@ raphael_tfadsp_report(void)
 }
 
 extern void raphael_tfadsp_close(void);
+extern bool hakios_raphael_tone(uint32_t ms, uint32_t gain, uint32_t ramp_ms);
 extern bool raphael_tfa_start(void (*say)(const char *));
 extern void raphael_tfa_stop(void (*say)(const char *));
 
@@ -488,13 +489,17 @@ raphael_mi2s_step(void)
 	struct m_i2s cfg = { .version = 1, .bit_width = M_BITS, .channel_mode = 1 /* SD0 */, .mono_stereo = 1 /* stereo */,
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
 	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
-	uint32_t tx = 0, enable = 1, bypass = 0;
+	uint32_t tx = 0, enable = 1, bypass = 0, tone_ms = 3000, tone_gain_arg = 4, tone_ramp_ms = 1000;
+	bool tone_gain_set;
 	bool ok, tx_on = false;
 
 	if (!hakios_is_raphael()) {
 		return true;
 	}
 	PE_parse_boot_argn("mi2s_hold", &hold, sizeof(hold));
+	tone_gain_set = PE_parse_boot_argn("tone", &tone_ms, sizeof(tone_ms)) && tone_ms != 0;      /* boot-arg tone=MS plays a tone that long */
+	PE_parse_boot_argn("tone_gain", &tone_gain_arg, sizeof(tone_gain_arg));
+	PE_parse_boot_argn("tone_ramp_ms", &tone_ramp_ms, sizeof(tone_ramp_ms));
 	PE_parse_boot_argn("tfa_oob", &tfadsp_force_outband, sizeof(tfadsp_force_outband));
 	PE_parse_boot_argn("tfa_inband", &inband_max, sizeof(inband_max));
 	if (inband_max > M_INBAND_BUFFER) {
@@ -541,6 +546,12 @@ raphael_mi2s_step(void)
 				say("mi2s: the amplifier is started; held for %u s with the port running\n", hold);
 				delay_for_interval(hold * 1000, NSEC_PER_MSEC);
 				m_edges("port and amplifier running", hold);
+				if (tone_gain_set) {
+					/* quiet by default: 4/256 of -20 dBFS; boot-arg tone_gain=N (at most 256), tone_ms, tone_ramp_ms */
+					say("mi2s: the tone follows: %u ms, gain %u/256, rising over %u ms\n", tone_ms, tone_gain_arg, tone_ramp_ms);
+					hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
+					m_edges("after the tone", hold);
+				}
 			}
 			raphael_tfadsp_report();
 			raphael_tfa_stop(say_line);

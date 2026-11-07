@@ -786,6 +786,7 @@ hakios_audio_dsp_memory_put(void)
 #define ADM_CMD_DEVICE_CLOSE_V5                 0x00010327u
 #define ADM_CMD_MATRIX_MAP_ROUTINGS_V5          0x00010325u
 #define ADM_PATH_PLAYBACK                       1
+#define ADM_ENDPOINT                            (hakios_is_raphael() ? 0x1006u : (uint32_t)PORT)        /* raphael: QUAT_MI2S_RX */
 #define ADM_MATRIX_AUDIO_RX                     0
 #define ADM_TOPOLOGY_NONE                       0x00010312u
 #define ADM_BITS                                24
@@ -859,7 +860,7 @@ stream_on(void)
 		uint16_t channels, bits;
 		uint32_t rate;
 		uint8_t map[8];
-	} __attribute__((packed)) open = { 0, ADM_PATH_PLAYBACK, PORT, 0xffff, ADM_TOPOLOGY_NONE, 2, ADM_BITS, RATE,
+	} __attribute__((packed)) open = { 0, ADM_PATH_PLAYBACK, ADM_ENDPOINT, 0xffff, ADM_TOPOLOGY_NONE, 2, ADM_BITS, RATE,
 		                           { PCM_CHANNEL_FL, PCM_CHANNEL_FR } };
 	struct {
 		uint32_t matrix, sessions;
@@ -889,7 +890,7 @@ stream_on(void)
 	mapped = true;
 	map_handle = answer.words[0];
 	say("sound: our %u KB at %#llx are the DSP's handle %#x\n", BUFFER_BYTES / 1024, buffer_address, map_handle);
-	if (!command("a device path to the port: playback, no processing, 2 channels of 24 bits at 48 kHz", APR_SVC_ADM, PORT,
+	if (!command("a device path to the port: playback, no processing, 2 channels of 24 bits at 48 kHz", APR_SVC_ADM, ADM_ENDPOINT,
 	    ADM_CMD_DEVICE_OPEN_V5, &open, sizeof(open), ADM_CMDRSP_DEVICE_OPEN_V5, &answer)) {
 		return false;
 	}
@@ -942,14 +943,28 @@ static const int16_t tone[48] = {
 	-3277, -3249, -3165, -3028, -2838, -2600, -2317, -1995, -1638, -1254, -848, -428,
 };
 static uint32_t tone_at;
+static uint32_t tone_gain = 256, tone_ramp, tone_fills;      /* the tone's level out of 256, and the periods over which it rises to it (raphael's quiet test) */
 
 static void
 period_fill(unsigned period, bool silent)
 {
 	int16_t *samples = (int16_t *)(buffer + 4096 * period);
 
+	if (!silent) {
+		tone_fills++;
+	}
+
 	for (unsigned frame = 0; frame < PERIOD_FRAMES; frame++) {
 		int16_t sample = silent ? 0 : tone[tone_at++ % 48];
+
+		if (!silent && tone_gain < 256) {
+			uint32_t g = tone_gain;
+
+			if (tone_ramp && tone_fills < tone_ramp) {
+				g = g * tone_fills / tone_ramp;
+			}
+			sample = (int16_t)((int32_t)sample * (int32_t)g / 256);
+		}
 
 		samples[2 * frame] = sample;
 		samples[2 * frame + 1] = sample;
@@ -1052,6 +1067,42 @@ play(uint32_t ms, bool amplifiers)
 			say("sound: the amplifiers' status looked at %u times while it played\n", healthy_looks);
 		}
 	}
+	return ok;
+}
+
+/*
+ * raphael: the test tone through the quaternary MI2S port (0x1006) that raphael_mi2s.c has opened and the amplifier
+ * it has started: an ADM device path and an ASM stream to it, 1 kHz at -20 dBFS times gain/256, rising to that over
+ * `ramp_ms'. The DSP's speaker protection (TFADSP) sits in the path.
+ */
+bool
+hakios_raphael_tone(uint32_t ms, uint32_t gain, uint32_t ramp_ms)
+{
+	bool ok = false;
+
+	lck_mtx_lock(&sound_lock);
+	lck_mtx_lock(&hakios_smmu_lock);
+	ok = shared_get(0);
+	lck_mtx_unlock(&hakios_smmu_lock);
+	if (ok) {
+		hakios_adsp_apr_events(events);
+		tone_gain = gain > 256 ? 256 : gain;
+		tone_ramp = ramp_ms / 20;
+		tone_fills = 0;
+		ok = stream_on();
+		if (ok) {
+			say("sound: THE TONE PLAYS NOW for %u ms: 1 kHz, level %u/256 of -20 dBFS, rising over %u ms\n", ms, tone_gain, ramp_ms);
+			ok = play(ms, false);
+			say("sound: the tone has ended\n");
+		}
+		stream_off();
+		space_faults();
+		hakios_adsp_apr_events(NULL);
+		lck_mtx_lock(&hakios_smmu_lock);
+		shared_put(0);
+		lck_mtx_unlock(&hakios_smmu_lock);
+	}
+	lck_mtx_unlock(&sound_lock);
 	return ok;
 }
 
