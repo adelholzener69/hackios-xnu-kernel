@@ -113,7 +113,7 @@ extern lck_mtx_t hakios_rsc_lock;            /* RPMh's sequencer, shared with th
 
 static LCK_GRP_DECLARE(adsp_lock_group, "hakios-adsp");
 
-#define STEPS                   11
+#define STEPS                   12
 #define HAKIOS_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin */
 
 static uint32_t last_step, pause_ms = 2200, listen_seconds = 3;
@@ -3216,9 +3216,18 @@ step_apr(void)
 
 /* ---- the steps, and their end ----------------------------------------------------------------------- */
 
+extern bool raphael_mi2s_step(void);
+
+static bool
+step_mi2s(void)
+{
+	announce("the audio DSP is asked to open the speaker's interface (quaternary MI2S, raphael only; raphael_mi2s.c)");
+	return raphael_mi2s_step();
+}
+
 static bool (*const steps[STEPS])(void) = {
 	step_survey, step_firmware, step_mailbox, step_header, step_image, step_our_item, step_start, step_queues, step_link,
-	step_qrtr, step_apr,
+	step_qrtr, step_apr, step_mi2s,
 };
 
 static bool keep;                       /* the DSP and the link stay up while the system runs (adsp_keep, adsp=1) */
@@ -3333,7 +3342,7 @@ hakios_adsp_init(void)
 	if (hakios_is_raphael()) {
 		smem_phys = 0x86000000UL;       /* dt: reserved-memory smem */
 		if (last_step == 0) {
-			printf("adsp: raphael: adsp=1 would also start the POCO's speaker path, whose addresses are not this phone's; use adsp_step=N, N up to 11\n");
+			printf("adsp: raphael: adsp=1 would also start the POCO's speaker path, whose addresses are not this phone's; use adsp_step=N, N up to 12\n");
 			return;
 		}
 		/* steps 1 to 11 (the DSP started, GLINK, QRTR, APR) may be run one by one with adsp_step=N; adsp=1 may not */

@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 4a done (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
+Status: **milestone 4a and 4b done (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -149,7 +149,15 @@ configuration; (a) and (c) are new for this phone (a TFA98xx instead of the POCO
   The answer is the same before and after pulsing the reset line, so the chip was already awake;
 - nothing was written to the amplifier.
 
-Next: (b) open the MI2S port over APR.
+**Sub-step (b), passed on a Redmi K20 Pro, 2026-11-07** (`adsp_step=12`, `bsd/dev/raphael_mi2s.c`, image built with `ADSP=1`):
+
+- GPIO 137 to 140 switched to the quaternary MI2S function (mux 1, 8 mA, no pull; clock and word select driven high first);
+- the DSP accepted, each with status 0: the interface bit clock (clock id 0x106, 1.536 MHz = 48 kHz x 16 bits x 2), the port's
+  I2S configuration (master, 48 kHz, 16 bits, stereo, data line 0) and the port's start (AFE port 0x1006), and later the stop;
+- **the pins show it: with the port running, the bit clock (137) changed 183,162 times in 200,000 samples and the word select
+  (138) 30,746 times; before, neither moved.** The data line stays still (no stream yet).
+
+Next: (c) the amplifier's start-up from `mono.cnt`, with this clock running.
 
 This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
 likely to stall.
