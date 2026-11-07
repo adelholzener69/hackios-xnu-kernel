@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 2 done: the audio DSP boots on the phone and reports "up". The link (GLINK, QRTR) and APR are next.** Everything in the table below was read from this phone's
+Status: **milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -96,6 +96,30 @@ What changed in the code (`hakios.adsp.c`, plus one exported helper in `hakios.w
 `ring_aop`: APCS bits 8, 10 and 0), polling instead of IPCC, the shared memory at `0x86000000`, the DSP's memory,
 `item_make()` and `glink_prepare()`, and the proxy votes (`hakios_raphael_cx_xo_proxy()`).
 
-**Next, milestone 3:** the link. GLINK's channels, QRTR on `IPCRTR`, and APR on `apr_audio_svc`, to see whether the
-audio services come up (steps 8 to 11, `adsp_step=11`). `adsp=1` stays refused on raphael: it would also start the
-POCO's speaker path, whose addresses are not this phone's.
+**Milestone 3 (the link), passed on a Redmi K20 Pro, 2026-11-07.** Boot with `adsp_step=11`. After the DSP is up:
+
+- GLINK: versions agreed 52 ms after ours; the DSP opened `glink_ssr`, `fastrpcglink-apps-dsp`, `IPCRTR`,
+  `LOOPBACK_CTL_LPASS`, `apr_audio_svc` and `apr_apps2`. `IPCRTR` and `apr_audio_svc` are open both ways; the others are
+  left unanswered (nothing here speaks them);
+- QRTR: hello both ways; the DSP is node 5 and announced 8 services (ids 0x301, 0x42, 0x422, 0x2b, 0xf twice,
+  0x33, 0x18);
+- APR: **"the audio services are up" after 503 ms and one question**; the core service listed its services and
+  versions (ids 0 to 0xd);
+- the DSP was asked to stop and shut down cleanly.
+
+`adsp=1` stays refused on raphael: it would also start the POCO's speaker path (`hakios.sound.c`), whose addresses are not
+this phone's. `adsp_step=N` (N up to 11) is the supported way.
+
+## The speaker path: what the phone has
+
+From the device tree: one **NXP TFA98xx smart amplifier at I2C address 0x34** on `qupv3_se1_i2c`, reset on GPIO 59
+(`0x3b`), interrupt on GPIO 141 (`0x8d`); a `fsa4480` audio switch for the USB-C port; the sound card
+`sm8150-tavil-snd-card` (WCD9341 codec, not needed for the loudspeaker).
+
+From the stock ROM (`vendor.img`): the amplifier's configuration container `firmware/mono.cnt` (12,503 bytes),
+Android's routing `etc/mixer_paths_tavil.xml`, and the audio calibration `etc/acdbdata/Forte/Forte_Speaker_cal.acdb`
+and `adsp_avs_config.acdb`.
+
+**Next, milestone 4:** find from `mixer_paths_tavil.xml` which AFE port and format the speaker uses, bring up the amplifier
+over I2C (reset, its container profile, volume), open an AFE port and a PCM stream over APR, and play a tone. The
+iOS side (`HakiosAudio.driver`, `/dev/hakios-audio`) is already generic and will follow.

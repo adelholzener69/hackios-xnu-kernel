@@ -3333,14 +3333,10 @@ hakios_adsp_init(void)
 	if (hakios_is_raphael()) {
 		smem_phys = 0x86000000UL;       /* dt: reserved-memory smem */
 		if (last_step == 0) {
-			printf("adsp: raphael: adsp=1 goes on to the link and APR, which are not adapted yet; use adsp_step=N, N up to 7\n");
+			printf("adsp: raphael: adsp=1 would also start the POCO's speaker path, whose addresses are not this phone's; use adsp_step=N, N up to 11\n");
 			return;
 		}
-		if (last_step > 7) {
-			/* steps 1 to 7 (the DSP started, and its SMP2P "up" seen) are adapted; the link and APR (8 to 11) are not yet */
-			printf("adsp: raphael: only steps 1 to 7 (adsp_step=7) are available for now; not going further\n");
-			last_step = 7;
-		}
+		/* steps 1 to 11 (the DSP started, GLINK, QRTR, APR) may be run one by one with adsp_step=N; adsp=1 may not */
 	} else if (pe_arm_get_soc_base_phys() != HAKIOS_SOC_BASE) {
 		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
 		return;
