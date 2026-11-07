@@ -1408,6 +1408,7 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
  */
 extern void raphael_mi2s_close(void);
 extern bool raphael_amp_power(bool on);
+extern void raphael_tfa_sense(uint16_t out[5]);
 static bool running, taken_down;
 
 /*
@@ -1441,8 +1442,14 @@ raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
 		}
 		if (ios_debug && now - last_debug_us >= 500000 && (sounded != 0 && now - sounded < 3000000)) {
 			last_debug_us = now;
-			say("sound: debug: ring %u frames, amp ready %d, primed %d, gain %u, peak sent %u, sink calls since: %llu frames from iOS so far\n",
-			    ring_head - ring_tail, ios_amp_ready, jitter_primed, ios_gain_now, fed_peak, ios_frames);
+			uint16_t sense[5] = { 0, 0, 0, 0, 0 };
+
+			if (ios_amp_ready) {
+				raphael_tfa_sense(sense);
+			}
+			say("sound: debug: ring %u frames, amp ready %d, primed %d, gain %u, peak sent %u, %llu frames from iOS; amp 10=%04x 11=%04x 14=%04x sense 16=%04x 17=%04x\n",
+			    ring_head - ring_tail, ios_amp_ready, jitter_primed, ios_gain_now, fed_peak, ios_frames, sense[0], sense[1], sense[2],
+			    sense[3], sense[4]);
 			fed_peak = 0;
 		}
 		want = !muted && sounded != 0 && now - sounded < 100000;

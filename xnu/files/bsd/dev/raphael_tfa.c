@@ -272,3 +272,16 @@ raphael_tfa_quiesce(void)
 
 	raphael_amp_panic_write(TFA_ADDR, powerdown, sizeof(powerdown));
 }
+
+/* The amplifier's state and its current/voltage sense, for the status line (ios_debug=1): status 0x10, 0x11, manager 0x14, sense 0x16, 0x17. */
+void
+raphael_tfa_sense(uint16_t out[5])
+{
+	static const uint8_t regs[5] = { 0x10, 0x11, 0x14, 0x16, 0x17 };
+
+	for (unsigned i = 0; i < 5; i++) {
+		uint8_t b[2] = { 0, 0 };
+
+		out[i] = bus_read(regs[i], b, 2) ? 0xffff : (uint16_t)(b[0] << 8 | b[1]);
+	}
+}
