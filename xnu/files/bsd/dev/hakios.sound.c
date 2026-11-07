@@ -1161,6 +1161,7 @@ ios_sink(const int16_t *frames, uint32_t count)
 static uint32_t guard_periods;                  /* periods through the guard */
 #define JITTER_FRAMES           2400            /* 50 ms */
 static bool jitter_primed;
+static volatile uint32_t fed_peak;              /* the largest sample sent to the DSP since the watcher last said (boot-arg ios_debug=1) */
 static uint32_t jitter_primes, jitter_dry, jitter_short;
 static uint32_t ios_gain = 128;                 /* raphael: the loudest, out of 256 (boot-arg ios_gain); iOS's volume is under it */
 static volatile uint32_t ios_gain_now = 128 * 256;      /* the gain in force, out of 65536: ios_gain and iOS's volume (the watcher keeps it) */
@@ -1269,6 +1270,13 @@ period_fill_ios(unsigned period)
 				samples[i] = (int16_t)((int64_t)samples[i] * (int64_t)g / 65536);
 			}
 		}
+		for (uint32_t i = 0; i < 2 * n; i++) {
+			uint32_t a = samples[i] < 0 ? (uint32_t)-samples[i] : (uint32_t)samples[i];
+
+			if (a > fed_peak) {
+				fed_peak = a;
+			}
+		}
 	} else {
 		/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
 		hakios_guard_process(samples, PERIOD_FRAMES);
@@ -1345,17 +1353,20 @@ static bool running, taken_down;
 /*
  * raphael: iOS's volume and the amplifier's power. The volume is a gain on the samples (the plug-in says how far under the
  * loudest iOS wants it, the loudest is ios_gain); the amplifier is started when sound comes (what iOS wrote waits in the ring
- * until it is up, so nothing is lost) and powered down after ios_amp_idle seconds (default 20) of silence or while iOS's
- * volume is 0, as the POCO's watcher does for its amplifiers.
+ * until it is up, so nothing is lost) and powered down after ios_amp_idle seconds of silence.
+ * Powering down (an opt-in: ios_amp_idle=N seconds) is NOT WORKING YET, so it is off by default (ios_amp_idle=0: the amplifier
+ * stays on): after the first power-down the DSP no longer plays through the restarted amplifier (kernel-only restarts, with the stream restarted too, are fine).
  */
 static void
 raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
 {
-	uint32_t generation = 0, idle_s = 20, starts = 0, stops = 0;
+	uint32_t generation = 0, idle_s = 0, starts = 0, stops = 0, ios_debug = 0;
+	uint64_t last_debug_us = 0;
 	uint64_t wanted_at = now_us();
 	bool muted = false;
 
 	PE_parse_boot_argn("ios_amp_idle", &idle_s, sizeof(idle_s));
+	PE_parse_boot_argn("ios_debug", &ios_debug, sizeof(ios_debug));
 	while (!stopping) {
 		uint32_t below, generation_now;
 		bool muted_now, want;
@@ -1367,6 +1378,12 @@ raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
 			ios_gain_now = muted ? 0 : volume_gain(ios_gain, below);
 			say("sound: iOS sets the volume: %s%u.%03u dB under the loudest: gain %u/65536\n", muted ? "muted, " : "", below / 8,
 			    below % 8 * 125, ios_gain_now);
+		}
+		if (ios_debug && now - last_debug_us >= 500000 && (sounded != 0 && now - sounded < 3000000)) {
+			last_debug_us = now;
+			say("sound: debug: ring %u frames, amp ready %d, primed %d, gain %u, peak sent %u, sink calls since: %llu frames from iOS so far\n",
+			    ring_head - ring_tail, ios_amp_ready, jitter_primed, ios_gain_now, fed_peak, ios_frames);
+			fed_peak = 0;
 		}
 		want = !muted && sounded != 0 && now - sounded < 100000;
 		if (want) {
@@ -1381,7 +1398,7 @@ raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
 					sleep_ms(1000);
 				}
 			}
-		} else if (ios_amp_ready && (muted || now - wanted_at > idle_s * 1000000ull)) {
+		} else if (ios_amp_ready && idle_s != 0 && now - wanted_at > idle_s * 1000000ull) {
 			ios_amp_ready = false;
 			raphael_amp_power(false);
 			stops++;

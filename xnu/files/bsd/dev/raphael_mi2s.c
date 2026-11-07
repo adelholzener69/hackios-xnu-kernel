@@ -577,6 +577,7 @@ raphael_mi2s_step(void)
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
 	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
 	uint32_t tx = 0, enable = 1, bypass = 0, tone_ms = 3000, tone_gain_arg = 4, tone_ramp_ms = 1000;
+	uint32_t tone_repeat = 1;
 	bool ok, tone_gain_set, keep = false;
 
 	if (!hakios_is_raphael()) {
@@ -586,6 +587,7 @@ raphael_mi2s_step(void)
 	tone_gain_set = PE_parse_boot_argn("tone", &tone_ms, sizeof(tone_ms)) && tone_ms != 0;      /* boot-arg tone=MS plays a tone that long */
 	PE_parse_boot_argn("tone_gain", &tone_gain_arg, sizeof(tone_gain_arg));
 	PE_parse_boot_argn("tone_ramp_ms", &tone_ramp_ms, sizeof(tone_ramp_ms));
+	PE_parse_boot_argn("tone_repeat", &tone_repeat, sizeof(tone_repeat));
 	PE_parse_boot_argn("tfa_oob", &tfadsp_force_outband, sizeof(tfadsp_force_outband));
 	PE_parse_boot_argn("tfa_inband", &inband_max, sizeof(inband_max));
 	if (inband_max > M_INBAND_BUFFER) {
@@ -646,6 +648,17 @@ raphael_mi2s_step(void)
 					raphael_tfa_dump("before the tone", say_line);
 					hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
 					m_edges("after the tone", hold);
+					/* boot-arg tone_repeat=N: the amplifier stopped and started again N-1 times, a tone each time (a test) */
+					for (uint32_t again = 1; again < tone_repeat; again++) {
+						say("mi2s: ---- restart %u: the amplifier is powered down, 2 s, and started again\n", again);
+						raphael_amp_power(false);
+						delay_for_interval(2000, NSEC_PER_MSEC);
+						if (!raphael_amp_power(true)) {
+							break;
+						}
+						raphael_tfa_dump("after the restart", say_line);
+						hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
+					}
 				} else if (!ios) {
 					delay_for_interval(hold * 1000, NSEC_PER_MSEC);
 					m_edges("port and amplifier running", hold);
