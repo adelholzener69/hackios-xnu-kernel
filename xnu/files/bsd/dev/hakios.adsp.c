@@ -287,7 +287,10 @@ put(struct block *b, const char *name, uint32_t offset, uint32_t value)
 
 /* ---- the shared memory (hakios.wifi.c, step 1) --------------------------------------------------- */
 
-#define SMEM_PHYS               0x80900000UL
+/* The shared memory: 0x80900000 on the POCO X5 Pro (redwood); raphael's SM8150 has it at 0x86000000
+ * (dt: reserved-memory smem), set when the audio DSP's start begins (hakios_adsp_init). */
+static unsigned long smem_phys = 0x80900000UL;
+#define SMEM_PHYS               smem_phys
 #define SMEM_SIZE               0x00200000u
 #define SMEM_US                 0
 #define SMEM_ADSP               2               /* dt: qcom,remote-pid of qcom,smp2p-adsp and qcom,glink/adsp */
@@ -947,7 +950,8 @@ step_survey(void)
 	struct smp2p words;
 	uint32_t size = 0;
 
-	announce("read our partition with the audio DSP in the shared memory (0x80900000), and its items");
+	announce("read our partition with the audio DSP in the shared memory, and its items");
+	printf("adsp: %u: the shared memory is at %#lx\n", step, (unsigned long)SMEM_PHYS);
 	show_partition();
 	if (dsp_words(&words)) {
 		show_words("the DSP's item (443) is there: it has run since the phone was started", &words);
@@ -958,15 +962,21 @@ step_survey(void)
 	    smem_item(ITEM_SMP2P_OURS, &size) ? "there" : "not there", smem_item(478, &size) ? "there" : "NOT THERE",
 	    smem_item(479, &size) ? "there" : "NOT THERE", smem_item(480, &size) ? "there" : "not there (the DSP makes it)");
 	show_crash_reason();
-	need(&ipcc);
-	printf("adsp: %u: the doorbells say %#x\n", step, rd(ipcc.base + IPCC_RECEIVED));
+	if (!hakios_is_raphael()) {
+		/* the POCO's doorbells are in the IPCC block; raphael's SM8150 has none (it uses the APCS mailbox) */
+		need(&ipcc);
+		printf("adsp: %u: the doorbells say %#x\n", step, rd(ipcc.base + IPCC_RECEIVED));
+	}
 	return smem_partition(SMEM_US, SMEM_ADSP, &size, &size) != 0;
 }
 
 /* ---- step 2: the firmware -------------------------------------------------------------------------- */
 
-#define ADSP_MEMORY             0x86700000u     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
-#define ADSP_MEMORY_SIZE        0x04000000u
+/* The DSP's memory. POCO: dt reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000.
+ * raphael (SM8150): dt reserved-memory pil_adsp_region 0x8be00000, 0x2200000 (36 MiB), memory-region of
+ * qcom,lpass@17300000; its adsp.mdt's loadable segments run from 0x8be00000 to exactly 0x8e000000. */
+#define ADSP_MEMORY             (hakios_is_raphael() ? 0x8be00000u : 0x86700000u)
+#define ADSP_MEMORY_SIZE        (hakios_is_raphael() ? 0x02200000u : 0x04000000u)
 #define PAS_ADSP                1               /* dt: qcom,pas-id */
 
 
@@ -3206,7 +3216,18 @@ hakios_adsp_init(void)
 	if (last_step == 0 && (!PE_parse_boot_argn("adsp", &on, sizeof(on)) || on != 1)) {
 		return;
 	}
-	if (pe_arm_get_soc_base_phys() != HAKIOS_SOC_BASE) {
+	if (hakios_is_raphael()) {
+		smem_phys = 0x86000000UL;       /* dt: reserved-memory smem */
+		if (last_step == 0) {
+			printf("adsp: raphael: adsp=1 would boot the DSP and is not adapted yet; use adsp_step=1 or 2\n");
+			return;
+		}
+		if (last_step > 2) {
+			/* only the read-only steps 1 and 2 are adapted to raphael so far; booting the DSP needs its doorbells */
+			printf("adsp: raphael: only steps 1 and 2 (adsp_step=1 or 2) are available for now; not going further\n");
+			last_step = 2;
+		}
+	} else if (pe_arm_get_soc_base_phys() != HAKIOS_SOC_BASE) {
 		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
 		return;
 	}

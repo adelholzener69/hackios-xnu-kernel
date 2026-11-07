@@ -44,6 +44,16 @@ for f in modem.mdt wlanmdsp.mbn "$BDF" $(adb shell 'ls /vendor/firmware_mnt/imag
 done
 ls fw-raphael | wc -l | xargs echo "modem files copied:"
 
+# The audio DSP's firmware (adsp.mdt and its segments, 14 MB) from the same read-only mount. It is
+# only needed to work on sound (build the image with ADSP=1); it goes in fw-audio/, a folder of its own.
+if adb shell test -f /vendor/firmware_mnt/image/adsp.mdt; then
+	mkdir -p fw-audio
+	for f in adsp.mdt $(adb shell 'ls /vendor/firmware_mnt/image' | tr -d '\r' | grep -E '^adsp\.b[0-9][0-9]$'); do
+		adb pull -q "/vendor/firmware_mnt/image/$f" "fw-audio/$f"
+	done
+	ls fw-audio | wc -l | xargs echo "audio DSP files copied:"
+fi
+
 echo "== NV partitions (full, read-only) =="
 for part in modemst1 modemst2 fsg fsc; do
 	adb exec-out "cat $BYNAME/$part" > "fw-raphael/nv-$part.tmp"

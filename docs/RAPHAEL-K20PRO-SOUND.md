@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **planning, nothing implemented yet.** Everything in the table below was read from this phone's
+Status: **milestone 1 done (read-only steps verified on the phone); the DSP is not booted yet.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -61,3 +61,23 @@ SMP2P), the memory region, and the firmware layout.
 
 Headphones, microphones, calls and Bluetooth audio all need the SLIMbus codec (WCD9341) and are not part
 of the first goal, which is sound from the loudspeaker.
+
+## Progress
+
+**Milestone 1 (read only), passed on a Redmi K20 Pro, 2026-11-07.** Build the image with the firmware
+(`ADSP=1`, firmware in `fw-audio/`; `devices/raphael/kit/pull-firmware.sh` or the ROM's `NON-HLOS.bin` provide it)
+and boot with `adsp_step=2`. The kernel log then says:
+
+- the shared memory is at `0x86000000`; the partition between the main processor and the audio DSP exists
+  (`0x861cf000`, 0x30000 bytes, 0 items), and the DSP has not run (item 443 absent);
+- the image is whole: a header of 7820 bytes (7288 of hashes), 13 segments, 14,244,900 bytes of files, covering
+  exactly `0x2200000` bytes from `0x8be00000`;
+- nothing was written to hardware.
+
+Found on the way: GLINK's descriptor and our queue (shared-memory items 478/479) are absent on this boot chain;
+the POCO's boot chain creates them. The raphael Wi-Fi code does it itself (`glink_prepare` in `hakios.wifi.c`), so
+the audio DSP needs the same.
+
+**Next, milestone 2:** the writes. The APCS doorbells (GLINK bit 8, SMP2P bit 10), the always-on processor's
+mailbox, TrustZone image 1, our SMP2P item, the GLINK items, and the DSP's rails; then watch for "up".
+`adsp=1` and `adsp_step` above 2 are refused on raphael until those are adapted.
