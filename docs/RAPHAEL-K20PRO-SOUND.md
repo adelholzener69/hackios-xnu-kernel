@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 4 done: the loudspeaker plays a test tone (a Redmi K20 Pro, 2026-11-07) (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
+Status: **milestone 4 done: the loudspeaker plays, and so does iOS's sound (a Redmi K20 Pro, 2026-11-07) (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -200,8 +200,20 @@ about 50 ms later it dropped out (TDM error flagged, clocks lost). **Android's s
 had chosen made it flag an error and shut down. With 24 bits (AFE I2S config `bit_width` 24, bit clock 48,000 x 32 x 2, and the NXP driver told
 `pcm_format` 24) it stays up and plays. Also needed: the un-mute Android's driver does after each start.
 
-Not done yet: iOS's own audio (`/dev/hakios-audio`, as `hakios.sound.c` level 4 does for the POCO) is not routed here, nor the volume control; the
-feedback port stays on only for the length of the test.
+**iOS's sound plays through the speaker, smooth (a Redmi K20 Pro, 2026-11-07).** Boot (the full image, `RC_JOBS=devices/raphael/raphael-sound.jobs` for the
+test session) with `adsp_step=12 adsp_keep=1 tfa=1 tfa_tx=1 ios_audio=1 ios_gain=64`: the port, the feedback port and the amplifier stay up for
+the whole run, and `/dev/hakios-audio` (iOS's audio server, through `HakiosAudio.driver`) is fed to the DSP by the same feeder the POCO uses, without that
+phone's guard (the DSP's TFADSP is the protection here). The tone iOS played through an audio queue, the system sounds and the owner's ringtones all
+came out of the loudspeaker.
+
+- `ios_gain` (out of 256, default 64: 12 dB under) is a digital cap of ours on top of iOS's own volume; raise it (up to 256) to taste;
+- **the first version hitched on ringtones**: iOS writes at the pace the DSP plays, so the ring was nearly empty and periods often went out part-filled
+  with silence. A 50 ms jitter buffer in front of the DSP (play once 50 ms are in the ring, wait again if it runs dry, let the tail out
+  50 ms after iOS stops writing) fixed it: in the next run it started 3 times, never ran dry while iOS was writing, 0 underflows; the owner: "smooth";
+- everything is stopped in order when the run ends (amplifier, feedback, ports, clock, pins).
+
+Not done: iOS's volume buttons do not change the amplifier (only iOS's own scaling of the samples); the amplifier and the feedback port stay on for
+the run even when nothing plays (battery); the panic path does not switch the amplifier off (`hakios_sound_quiesce` is the POCO's).
 
 **Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
 2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the
