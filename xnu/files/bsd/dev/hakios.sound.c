@@ -943,6 +943,7 @@ static const int16_t tone[48] = {
 	-3277, -3249, -3165, -3028, -2838, -2600, -2317, -1995, -1638, -1254, -848, -428,
 };
 static uint32_t tone_at;
+static bool tone_mute;                                       /* the "tone" is silence (the beeps test) */
 static uint32_t tone_gain = 256, tone_ramp, tone_fills;      /* the tone's level out of 256, and the periods over which it rises to it (raphael's quiet test) */
 
 static void
@@ -955,7 +956,7 @@ period_fill(unsigned period, bool silent)
 	}
 
 	for (unsigned frame = 0; frame < PERIOD_FRAMES; frame++) {
-		int16_t sample = silent ? 0 : tone[tone_at++ % 48];
+		int16_t sample = (silent || tone_mute) ? 0 : tone[tone_at++ % 48];
 
 		if (!silent && tone_gain < 256) {
 			uint32_t g = tone_gain;
@@ -1095,6 +1096,65 @@ hakios_raphael_tone(uint32_t ms, uint32_t gain, uint32_t ramp_ms)
 			ok = play(ms, false);
 			say("sound: the tone has ended\n");
 		}
+		stream_off();
+		space_faults();
+		hakios_adsp_apr_events(NULL);
+		lck_mtx_lock(&hakios_smmu_lock);
+		shared_put(0);
+		lck_mtx_unlock(&hakios_smmu_lock);
+	}
+	lck_mtx_unlock(&sound_lock);
+	return ok;
+}
+
+extern bool raphael_amp_power(bool on);
+
+/*
+ * raphael, a test: beeps with the amplifier power-cycled between them under a stream that keeps running (what the idle power-down
+ * does under iOS), and `variant' says what is done to the DSP's side around each cycle (raphael_mi2s.c): the bits are in
+ * raphael_cycle_before(). Boot-args tone_beeps=N tone_on_ms tone_off_ms beeps_variant (raphael_mi2s.c).
+ */
+extern void raphael_cycle_before(uint32_t variant);
+extern void raphael_cycle_after(uint32_t variant);
+
+bool
+hakios_raphael_beeps(uint32_t count, uint32_t on_ms, uint32_t off_ms, uint32_t gain, uint32_t variant)
+{
+	bool ok = false;
+
+	lck_mtx_lock(&sound_lock);
+	lck_mtx_lock(&hakios_smmu_lock);
+	ok = shared_get(0);
+	lck_mtx_unlock(&hakios_smmu_lock);
+	if (ok) {
+		hakios_adsp_apr_events(events);
+		tone_gain = gain > 256 ? 256 : gain;
+		tone_ramp = 25;
+		ok = stream_on();
+		for (uint32_t beep = 1; ok && beep <= count; beep++) {
+			tone_mute = false;
+			tone_fills = 0;
+			say("sound: ---- BEEP %u of %u: 1 kHz for %u ms\n", beep, count, on_ms);
+			ok = play(on_ms, false);
+			if (beep == count) {
+				break;
+			}
+			say("sound: ---- the amplifier is powered down for %u ms (variant %u)\n", off_ms, variant);
+			tone_mute = true;
+			raphael_amp_power(false);
+			raphael_cycle_before(variant);
+			if (variant & 16) {
+				stream_off();
+				stream_on();
+			}
+			play(off_ms, false);
+			raphael_cycle_after(variant);
+			if (!raphael_amp_power(true)) {
+				say("sound: THE AMPLIFIER DID NOT START\n");
+				ok = false;
+			}
+		}
+		tone_mute = false;
 		stream_off();
 		space_faults();
 		hakios_adsp_apr_events(NULL);
@@ -1453,6 +1513,40 @@ hakios_raphael_ios_start(void)
 	say("sound: WHAT IOS PLAYS GOES TO THE SPEAKER from here on (cut to %u/256), until the run ends\n", ios_gain);
 	lck_mtx_unlock(&sound_lock);
 	return true;
+}
+
+
+/*
+ * raphael, a test of the whole iOS path without iOS: bursts of tone written into the ring as iOS's writer would (480 frames every
+ * 10 ms, at the level of a quiet tone through an audio queue), with silence between them in which the watcher may power the
+ * amplifier down (boot-arg ios_amp_idle) and start it again for the next burst. Blocks for the length of the test.
+ */
+void
+hakios_raphael_ios_selftest(uint32_t bursts, uint32_t burst_ms, uint32_t gap_ms)
+{
+	uint64_t next = now_us();
+	uint32_t at = 0;
+
+	for (uint32_t burst = 1; burst <= bursts && !stopping; burst++) {
+		uint64_t end = now_us() + burst_ms * 1000ull;
+
+		say("sound: ---- SELFTEST burst %u of %u: tone written into the ring for %u ms\n", burst, bursts, burst_ms);
+		next = now_us();
+		while (now_us() < end && !stopping) {
+			int16_t frames[2 * 480];
+
+			for (unsigned i = 0; i < 480; i++) {
+				frames[2 * i] = frames[2 * i + 1] = (int16_t)(tone[at++ % 48] / 4);
+			}
+			(void)ios_sink(frames, 480);
+			next += 10000;
+			while (now_us() < next) {
+				sleep_ms(1);
+			}
+		}
+		say("sound: ---- SELFTEST burst %u written; silence for %u ms\n", burst, gap_ms);
+		sleep_ms(gap_ms);
+	}
 }
 
 /* The amplifiers' level as the guard is to reckon with it (sound_guard_as: louder than it is, for a test). */

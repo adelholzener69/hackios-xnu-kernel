@@ -566,7 +566,61 @@ raphael_mi2s_close(void)
 	}
 }
 
+
+/*
+ * Around an amplifier power-cycle (the beeps test, hakios.sound.c): what is done to the DSP's side. Bits of `variant':
+ * 1 the feedback module (TFADSP_TX) disabled, then enabled again;  2 the protection (TFADSP_RX) bypassed, then not;
+ * 4 the feedback port (0x1007) stopped and started again;  8 the playback port (0x1006) stopped and started again;
+ * 16 the stream restarted (done in hakios.sound.c).
+ */
+void
+raphael_cycle_before(uint32_t variant)
+{
+	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
+	uint32_t zero = 0, one = 1;
+
+	if (variant & 1) {
+		m_param_port("variant: TFADSP_TX, disabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &zero, sizeof(zero));
+	}
+	if (variant & 2) {
+		m_param_port("variant: TFADSP_RX, bypassed", M_PORT, M_MOD_TFADSP_RX, M_PARAM_TFADSP_RX_BYPASS, &one, sizeof(one));
+	}
+	if (variant & 4) {
+		m_cmd("variant: the port 0x1007, stopped", 0, M_OP_STOP, port_tx, sizeof(port_tx));
+	}
+	if (variant & 8) {
+		m_cmd("variant: the port 0x1006, stopped", 0, M_OP_STOP, port, sizeof(port));
+	}
+}
+
+void
+raphael_cycle_after(uint32_t variant)
+{
+	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
+	uint32_t zero = 0, one = 1;
+
+	if (variant & 8) {
+		m_cmd("variant: the port 0x1006, started", 0, M_OP_START, port, sizeof(port));
+	}
+	if (variant & 4) {
+		m_cmd("variant: the port 0x1007, started", 0, M_OP_START, port_tx, sizeof(port_tx));
+	}
+	if (variant & 1) {
+		m_param_port("variant: TFADSP_TX, enabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &one, sizeof(one));
+	} else if (variant & 4) {
+		m_param_port("variant: TFADSP_TX, enabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &one, sizeof(one));
+	}
+	if (variant & 2) {
+		m_param_port("variant: TFADSP_RX, not bypassed", M_PORT, M_MOD_TFADSP_RX, M_PARAM_TFADSP_RX_BYPASS, &zero, sizeof(zero));
+	}
+}
+
+extern void hakios_sound_dsp_down(void);
+#define raphael_ios_stop() hakios_sound_dsp_down()
+extern bool hakios_raphael_beeps(uint32_t count, uint32_t on_ms, uint32_t off_ms, uint32_t gain, uint32_t variant);
+
 extern bool hakios_raphael_ios_start(void);
+extern void hakios_raphael_ios_selftest(uint32_t bursts, uint32_t burst_ms, uint32_t gap_ms);
 
 bool
 raphael_mi2s_step(void)
@@ -577,7 +631,7 @@ raphael_mi2s_step(void)
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
 	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
 	uint32_t tx = 0, enable = 1, bypass = 0, tone_ms = 3000, tone_gain_arg = 4, tone_ramp_ms = 1000;
-	uint32_t tone_repeat = 1;
+	uint32_t tone_repeat = 1, beeps = 0, beeps_off_ms = 4000, beeps_variant = 0;
 	bool ok, tone_gain_set, keep = false;
 
 	if (!hakios_is_raphael()) {
@@ -588,6 +642,9 @@ raphael_mi2s_step(void)
 	PE_parse_boot_argn("tone_gain", &tone_gain_arg, sizeof(tone_gain_arg));
 	PE_parse_boot_argn("tone_ramp_ms", &tone_ramp_ms, sizeof(tone_ramp_ms));
 	PE_parse_boot_argn("tone_repeat", &tone_repeat, sizeof(tone_repeat));
+	PE_parse_boot_argn("tone_beeps", &beeps, sizeof(beeps));
+	PE_parse_boot_argn("tone_off_ms", &beeps_off_ms, sizeof(beeps_off_ms));
+	PE_parse_boot_argn("beeps_variant", &beeps_variant, sizeof(beeps_variant));
 	PE_parse_boot_argn("tfa_oob", &tfadsp_force_outband, sizeof(tfadsp_force_outband));
 	PE_parse_boot_argn("tfa_inband", &inband_max, sizeof(inband_max));
 	if (inband_max > M_INBAND_BUFFER) {
@@ -646,7 +703,11 @@ raphael_mi2s_step(void)
 						thread_deallocate(look);
 					}
 					raphael_tfa_dump("before the tone", say_line);
-					hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
+					if (beeps) {
+						hakios_raphael_beeps(beeps, tone_ms, beeps_off_ms, tone_gain_arg, beeps_variant);
+					} else {
+						hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
+					}
 					m_edges("after the tone", hold);
 					/* boot-arg tone_repeat=N: the amplifier stopped and started again N-1 times, a tone each time (a test) */
 					for (uint32_t again = 1; again < tone_repeat; again++) {
@@ -664,7 +725,16 @@ raphael_mi2s_step(void)
 					m_edges("port and amplifier running", hold);
 				}
 				if (ios && up.tx_enabled) {
+					uint32_t selftest = 0, burst_ms = 2000, gap_ms = 8000;
+
 					keep = hakios_raphael_ios_start();
+					if (PE_parse_boot_argn("ios_selftest", &selftest, sizeof(selftest)) && selftest != 0 && keep) {
+						PE_parse_boot_argn("ios_selftest_burst_ms", &burst_ms, sizeof(burst_ms));
+						PE_parse_boot_argn("ios_selftest_gap_ms", &gap_ms, sizeof(gap_ms));
+						hakios_raphael_ios_selftest(selftest, burst_ms, gap_ms);
+						keep = false;           /* (the test is over: everything is stopped below) */
+						raphael_ios_stop();
+					}
 				}
 			}
 		}
