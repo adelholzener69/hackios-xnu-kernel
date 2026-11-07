@@ -35,8 +35,9 @@ unlocked. Other firmware versions may work: step 5 tells you before you build an
 - A Linux PC with about **80 GB free disk, 16 GB RAM** and a few hours. Install: `git curl python3
   python3-venv clang lld llvm dtc adb fastboot simg2img 7zip` (7-Zip 23 or newer), plus
   `make gcc flex bison m4 perl autoconf automake libtool cmake meson ninja pkg-config xz unzip`.
-- [Theos](https://theos.dev/docs/installation-linux) in `~/theos` with the **iPhoneOS 16.5 SDK**
-  (HakiOS's README explains where to get it).
+- The **iOS toolchain and iPhoneOS 16.5 SDK** (what the build calls "Theos"). You do **not** need Theos
+  or its installer: step 7 installs just the two pieces required, and
+  [RAPHAEL-K20PRO-THEOS.md](RAPHAEL-K20PRO-THEOS.md) explains them and gives the manual commands.
 - Your phone's **stock fastboot ROM** for your region (from Xiaomi), unpacked: you need its
   `images/dtbo.img` and `images/vendor.img`.
 - The official **TWRP for raphael** (`twrp-3.7.1_12-1-raphael.img` from twrp.me), only to read your
@@ -87,7 +88,12 @@ python3 devices/raphael/kit/build-raphael-dtb.py \
     -o out/raphael/raphael.dtb
 ```
 
-**7. Build the kernel** (about 10 minutes after the dependencies):
+**7. Build the kernel** (about 10 minutes after the dependencies). First the toolchain, about 1 GB
+(no Theos installer involved, [details and manual commands](RAPHAEL-K20PRO-THEOS.md)):
+```sh
+devices/raphael/kit/install-toolchain.sh          # into ~/theos
+```
+Then:
 ```sh
 export THEOS="$HOME/theos" XNU_SRC="$PWD/xnu-src/xnu-8796.121.2-raphael"
 mkdir -p out/user-bin && export PATH="$PWD/out/user-bin:$PWD/xnu-deps/host/bin:$HOME/.local/venvs/meson/bin:$PATH"
@@ -134,6 +140,7 @@ second `xl run` while one is active.
 | | |
 |---|---|
 | `devices/raphael/kit/` | the helper scripts used above: `pull-firmware.sh`, `extract-gpu-firmware.sh`, `check-xbl.py`, `build-raphael-dtb.py`, `build-uefi-image.sh` |
+| `docs/RAPHAEL-K20PRO-THEOS.md` | the iOS toolchain and SDK without Theos's installer: what is needed, manual commands, fixes |
 | `docs/RAPHAEL-K20PRO-STATUS.md` | what works, and the roadmap to the POCO X5 Pro's level |
 | `docs/RAPHAEL-K20PRO-TROUBLESHOOTING.md` | things that went wrong while bringing this up, and fixes |
 | commit `84647ba` | loader recognises raphael's framebuffer (it fell into a QEMU-only path and hung); enables the battery reader |
