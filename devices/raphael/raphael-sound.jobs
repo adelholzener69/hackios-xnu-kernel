@@ -1,0 +1,5 @@
+# A RAM session for the speaker: wait for SpringBoard, then a tone through iOS (an audio queue, as a music player plays it)
+# at 5% of full scale, then two system sounds. Boot with adsp_step=12 adsp_keep=1 tfa=1 tfa_tx=1 ios_audio=1 (docs/RAPHAEL-K20PRO-SOUND.md).
+/redwood/bin/hello_dyn raphael speaker test
+/redwood/bin/sound_test springboard route level 0.05 tone 5 1000 1000 system 1104 wait 1 system 1100 wait 2
+/bin/ps -A

@@ -1155,6 +1155,7 @@ ios_sink(const int16_t *frames, uint32_t count)
 }
 
 static uint32_t guard_periods;                  /* periods through the guard */
+static uint32_t ios_gain = 64;                  /* raphael: what iOS plays is cut to this much out of 256 (boot-arg ios_gain) */
 static volatile bool guard_on;                  /* the amplifiers are on: what the guard lets through is heard */
 
 /* tenths of a dB as text: "-5.7" */
@@ -1203,8 +1204,17 @@ period_fill_ios(unsigned period)
 	ring_tail = tail + n;
 	fed_frames += n;
 	silent_frames += PERIOD_FRAMES - n;
-	/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
-	hakios_guard_process(samples, PERIOD_FRAMES);
+	if (hakios_is_raphael()) {
+		/* the speaker protection is the DSP's (TFADSP); a digital cap of ours on top (boot-arg ios_gain, out of 256) */
+		if (ios_gain < 256) {
+			for (uint32_t i = 0; i < 2 * n; i++) {
+				samples[i] = (int16_t)((int32_t)samples[i] * (int32_t)ios_gain / 256);
+			}
+		}
+	} else {
+		/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
+		hakios_guard_process(samples, PERIOD_FRAMES);
+	}
 	if (n != 0 && hakios_audio_recording_fed()) {
 		hakios_audio_record_fed(samples, n);
 	}
@@ -1259,6 +1269,52 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
 	    underflows, ios_frames, fed_frames, silent_frames);
 	feeder_runs = false;
 	thread_terminate(current_thread());
+}
+
+/*
+ * raphael: what iOS plays, through the port and the amplifier that raphael_mi2s.c has started (boot-arg ios_audio=1):
+ * the same stream and the same feeder as level 4 for the POCO, without that phone's guard and amplifiers (the
+ * DSP's TFADSP is the protection here). Runs until the run ends (hakios_sound_dsp_down()).
+ */
+extern void raphael_mi2s_close(void);
+static bool running, taken_down;
+
+bool
+hakios_raphael_ios_start(void)
+{
+	thread_t feeder;
+	bool ok;
+
+	PE_parse_boot_argn("ios_gain", &ios_gain, sizeof(ios_gain));
+	lck_mtx_lock(&sound_lock);
+	lck_mtx_lock(&hakios_smmu_lock);
+	ok = shared_get(0);
+	lck_mtx_unlock(&hakios_smmu_lock);
+	if (ok) {
+		hakios_adsp_apr_events(events);
+		ok = stream_on();
+	}
+	if (!ok) {
+		stream_off();
+		hakios_adsp_apr_events(NULL);
+		lck_mtx_unlock(&sound_lock);
+		return false;
+	}
+	level = 4;
+	running = true;
+	stopping = false;
+	feeder_runs = true;
+	if (kernel_thread_start(feeder_thread, NULL, &feeder) != KERN_SUCCESS) {
+		feeder_runs = false;
+		say("sound: no thread for the feeder\n");
+		lck_mtx_unlock(&sound_lock);
+		return false;
+	}
+	thread_deallocate(feeder);
+	hakios_audio_set_sink("the speaker (the audio DSP, raphael)", ios_sink);
+	say("sound: WHAT IOS PLAYS GOES TO THE SPEAKER from here on (cut to %u/256), until the run ends\n", ios_gain);
+	lck_mtx_unlock(&sound_lock);
+	return true;
 }
 
 /* The amplifiers' level as the guard is to reckon with it (sound_guard_as: louder than it is, for a test). */
@@ -1380,7 +1436,6 @@ watch(void)
 
 /* ---- the whole ---------------------------------------------------------------------------------------- */
 
-static bool running, taken_down;
 
 static void
 take_down(void)
@@ -1393,6 +1448,18 @@ take_down(void)
 		sleep_ms(1);
 	}
 	lck_mtx_lock(&sound_lock);
+	if (running && !taken_down && hakios_is_raphael()) {
+		taken_down = true;
+		stream_off();
+		lck_mtx_lock(&hakios_smmu_lock);
+		shared_put(0);
+		lck_mtx_unlock(&hakios_smmu_lock);
+		hakios_adsp_apr_events(NULL);
+		lck_mtx_unlock(&sound_lock);
+		raphael_mi2s_close();
+		say("sound: everything of the sound's is stopped and put back\n");
+		return;
+	}
 	if (running && !taken_down) {
 		taken_down = true;
 		hakios_speaker_stop();

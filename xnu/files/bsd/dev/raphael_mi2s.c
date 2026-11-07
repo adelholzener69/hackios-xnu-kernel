@@ -494,17 +494,63 @@ say_line(const char *text)
 	say("%s", text);
 }
 
+/* What is up, for raphael_mi2s_close(): the pins, the clock, the ports, the feedback, the amplifier. */
+static struct {
+	bool pins, clock, rx, tx, tx_enabled, amplifier;
+} up;
+
+/* Everything the step started, stopped in the opposite order; what is not up is left alone. */
+void
+raphael_mi2s_close(void)
+{
+	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
+	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * 32 * 2, M_CLK_COUPLE_NO, 0, 0 };
+	uint32_t enable = 0;
+
+	if (up.amplifier) {
+		raphael_tfadsp_report();
+		raphael_tfa_stop(say_line);
+		raphael_tfadsp_close();
+		up.amplifier = false;
+	}
+	if (up.tx_enabled) {
+		m_param_port("TFADSP_TX, disabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable));
+		up.tx_enabled = false;
+	}
+	if (up.tx) {
+		m_cmd("the port 0x1007, stopped", 0, M_OP_STOP, port_tx, sizeof(port_tx));
+		up.tx = false;
+	}
+	if (up.rx) {
+		m_cmd("the port 0x1006, stopped", 0, M_OP_STOP, port, sizeof(port));
+		up.rx = false;
+	}
+	if (up.clock) {
+		m_param("the bit clock, off", true, M_MOD_CLOCK_SET, M_PARAM_CLOCK_SET, &clk, sizeof(clk));
+		up.clock = false;
+	}
+	if (up.pins) {
+		/* back to what the device tree calls sleep: plain GPIO inputs, pulled down, 2 mA */
+		m_pin(137, 0, 1, 0, false, false);
+		m_pin(138, 0, 1, 0, false, false);
+		m_pin(139, 0, 1, 0, false, false);
+		m_pin(140, 0, 1, 0, false, false);
+		up.pins = false;
+	}
+}
+
+extern bool hakios_raphael_ios_start(void);
+
 bool
 raphael_mi2s_step(void)
 {
-	uint32_t hold = 3, tfa = 0;
+	uint32_t hold = 3, tfa = 0, ios = 0;
 	struct m_clock clk = { 1, M_CLK_QUAD_MI2S_IBIT, M_RATE * 32 * 2, M_CLK_COUPLE_NO, 0, 1 };
 	struct m_i2s cfg = { .version = 1, .bit_width = 24, .channel_mode = 1 /* SD0 */, .mono_stereo = 1 /* stereo */,
 		             .ws_src = 1 /* internal: we are the master */, .sample_rate = M_RATE, .data_format = 0 };
 	uint16_t port[2] = { M_PORT, 0 }, port_tx[2] = { M_PORT_TX, 0 };
 	uint32_t tx = 0, enable = 1, bypass = 0, tone_ms = 3000, tone_gain_arg = 4, tone_ramp_ms = 1000;
-	bool tone_gain_set;
-	bool ok, tx_on = false;
+	bool ok, tone_gain_set, keep = false;
 
 	if (!hakios_is_raphael()) {
 		return true;
@@ -518,6 +564,9 @@ raphael_mi2s_step(void)
 	if (inband_max > M_INBAND_BUFFER) {
 		inband_max = M_INBAND_BUFFER;
 	}
+	PE_parse_boot_argn("tfa", &tfa, sizeof(tfa));
+	PE_parse_boot_argn("tfa_tx", &tx, sizeof(tx));
+	PE_parse_boot_argn("ios_audio", &ios, sizeof(ios));     /* boot-arg ios_audio=1 (with tfa=1 tfa_tx=1 adsp_keep=1): what iOS plays goes to the speaker */
 	gpio = ml_io_map(0x03d00000u, 0x90000);
 	if (!gpio) {
 		say("mi2s: cannot map the pins\n");
@@ -531,69 +580,60 @@ raphael_mi2s_step(void)
 	m_pin(138, 1, 0, 3, true, true);
 	m_pin(139, 1, 0, 3, false, false);
 	m_pin(140, 1, 0, 3, false, false);
+	up.pins = true;
 	say("mi2s: pins on the interface: 137=%#x 138=%#x 139=%#x 140=%#x\n", m_rd(137 * 0x1000u), m_rd(138 * 0x1000u),
 	    m_rd(139 * 0x1000u), m_rd(140 * 0x1000u));
-	ok = m_param("the quaternary MI2S bit clock (0x106) at 3.072 MHz (24 bits in 32-bit slots), on", true, M_MOD_CLOCK_SET, M_PARAM_CLOCK_SET, &clk,
-	    sizeof(clk)) &&
-	    m_param("the port 0x1006: I2S, master, 48 kHz, 24 bits (32-bit slots), stereo, data line 0", false, M_MOD_DEV_INTERFACE,
+	ok = m_param("the quaternary MI2S bit clock (0x106) at 3.072 MHz (24 bits in 32-bit slots), on", true, M_MOD_CLOCK_SET,
+	    M_PARAM_CLOCK_SET, &clk, sizeof(clk));
+	up.clock = ok;
+	ok = ok && m_param("the port 0x1006: I2S, master, 48 kHz, 24 bits (32-bit slots), stereo, data line 0", false, M_MOD_DEV_INTERFACE,
 	    M_PARAM_I2S_CONFIG, &cfg, sizeof(cfg)) &&
 	    m_cmd("the port 0x1006, started", 0, M_OP_START, port, sizeof(port));
+	up.rx = ok;
 	if (ok) {
 		m_edges("port running", hold);
-		PE_parse_boot_argn("tfa", &tfa, sizeof(tfa));
-		PE_parse_boot_argn("tfa_tx", &tx, sizeof(tx));
 		if (tfa && tx) {
 			/* the feedback: the same interface, data line 1 (SD1), the DSP's TFADSP_TX module switched on, the protection not bypassed */
 			struct m_i2s cfg_tx = cfg;
 
 			cfg_tx.channel_mode = 2;
-			tx_on = m_param_port("the port 0x1007 (feedback): I2S, 48 kHz, 24 bits (32-bit slots), stereo, data line 1", M_PORT_TX, M_MOD_DEV_INTERFACE,
-			    M_PARAM_I2S_CONFIG, &cfg_tx, sizeof(cfg_tx)) &&
-			    m_cmd("the port 0x1007, started", 0, M_OP_START, port_tx, sizeof(port_tx)) &&
+			up.tx = m_param_port("the port 0x1007 (feedback): I2S, 48 kHz, 24 bits (32-bit slots), stereo, data line 1", M_PORT_TX,
+			    M_MOD_DEV_INTERFACE, M_PARAM_I2S_CONFIG, &cfg_tx, sizeof(cfg_tx)) &&
+			    m_cmd("the port 0x1007, started", 0, M_OP_START, port_tx, sizeof(port_tx));
+			up.tx_enabled = up.tx &&
 			    m_param_port("TFADSP_TX, enabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable)) &&
 			    m_param_port("TFADSP_RX, not bypassed", M_PORT, M_MOD_TFADSP_RX, M_PARAM_TFADSP_RX_BYPASS, &bypass, sizeof(bypass));
 			m_edges("feedback port running", hold);
 		}
 		if (tfa) {
+			up.amplifier = true;
 			if (raphael_tfa_start(say_line)) {
-				say("mi2s: the amplifier is started; held for %u s with the port running\n", hold);
-				delay_for_interval(hold * 1000, NSEC_PER_MSEC);
-				m_edges("port and amplifier running", hold);
+				say("mi2s: the amplifier is started\n");
 				if (tone_gain_set) {
+					thread_t look;
+
 					/* quiet by default: 4/256 of -20 dBFS; boot-arg tone_gain=N (at most 256), tone_ms, tone_ramp_ms */
 					say("mi2s: the tone follows: %u ms, gain %u/256, rising over %u ms\n", tone_ms, tone_gain_arg, tone_ramp_ms);
-					{
-						thread_t look;
-
-						if (kernel_thread_start(look_thread, NULL, &look) == KERN_SUCCESS) {
-							thread_deallocate(look);
-						}
+					if (kernel_thread_start(look_thread, NULL, &look) == KERN_SUCCESS) {
+						thread_deallocate(look);
 					}
 					raphael_tfa_dump("before the tone", say_line);
 					hakios_raphael_tone(tone_ms, tone_gain_arg, tone_ramp_ms);
 					m_edges("after the tone", hold);
+				} else if (!ios) {
+					delay_for_interval(hold * 1000, NSEC_PER_MSEC);
+					m_edges("port and amplifier running", hold);
+				}
+				if (ios && up.tx_enabled) {
+					keep = hakios_raphael_ios_start();
 				}
 			}
-			raphael_tfadsp_report();
-			raphael_tfa_stop(say_line);
-			raphael_tfadsp_close();
 		}
-		if (tx_on) {
-			enable = 0;
-			m_param_port("TFADSP_TX, disabled", M_PORT_TX, M_MOD_TFADSP_TX, M_PARAM_TFADSP_TX_ENABLE, &enable, sizeof(enable));
-		}
-		if (tx_on || tx) {
-			m_cmd("the port 0x1007, stopped", 0, M_OP_STOP, port_tx, sizeof(port_tx));
-		}
-		m_cmd("the port 0x1006, stopped", 0, M_OP_STOP, port, sizeof(port));
 	}
-	clk.enable = 0;
-	m_param("the bit clock, off", true, M_MOD_CLOCK_SET, M_PARAM_CLOCK_SET, &clk, sizeof(clk));
-	/* back to what the device tree calls sleep: plain GPIO inputs, pulled down, 2 mA */
-	m_pin(137, 0, 1, 0, false, false);
-	m_pin(138, 0, 1, 0, false, false);
-	m_pin(139, 0, 1, 0, false, false);
-	m_pin(140, 0, 1, 0, false, false);
-	say("mi2s: %s\n", ok ? "port opened, clock seen above; closed again" : "FAILED");
+	if (!keep) {
+		raphael_mi2s_close();
+	}
+	say("mi2s: %s\n", !ok ? "FAILED" : keep ? "the port, the feedback and the amplifier STAY UP for iOS's sound" :
+	    "port opened, clock seen above; closed again");
 	return ok;
 }
