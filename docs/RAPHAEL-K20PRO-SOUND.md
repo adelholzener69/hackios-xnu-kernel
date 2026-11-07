@@ -120,6 +120,25 @@ From the stock ROM (`vendor.img`): the amplifier's configuration container `firm
 Android's routing `etc/mixer_paths_tavil.xml`, and the audio calibration `etc/acdbdata/Forte/Forte_Speaker_cal.acdb`
 and `adsp_avs_config.acdb`.
 
-**Next, milestone 4:** find from `mixer_paths_tavil.xml` which AFE port and format the speaker uses, bring up the amplifier
-over I2C (reset, its container profile, volume), open an AFE port and a PCM stream over APR, and play a tone. The
-iOS side (`HakiosAudio.driver`, `/dev/hakios-audio`) is already generic and will follow.
+**Milestone 4: the speaker path.** What Android's own configuration says (from `audio_platform_info.xml` and the device tree):
+
+| | |
+|---|---|
+| Loudspeaker backend | `SND_DEVICE_OUT_SPEAKER` -> backend `speaker`, interface **`QUAT_MI2S_RX`** (the codec's own SLIMbus speaker paths in `mixer_paths_tavil.xml` are the other route and do not apply) |
+| AFE port | quaternary MI2S RX (`0x1006` in the Q6 AFE numbering) |
+| Port lines | one transmit data line (to the amplifier), two receive lines (the amplifier's voltage/current feedback) |
+| Pins (TLMM) | GPIO 137 (clock) and 138 (word select), 139 (data to the amplifier), 140 (feedback); function `qua_mi2s`, drive 8 mA, no pull |
+| Amplifier | NXP TFA98xx, I2C address `0x34` on `qupv3_se1_i2c`, reset GPIO 59, interrupt GPIO 141; container `mono.cnt` from the ROM (`fw-audio/mono.cnt`) |
+
+Order matters: a TFA98xx locks its clock to the I2S bit clock, so the port has to be running before the amplifier can finish
+starting. The sequence is therefore: TLMM pins to `qua_mi2s`; the DSP opens the MI2S port over APR; reset released and the
+amplifier configured over I2C from its container; an ASM/ADM stream routed to the port; PCM written.
+
+Sub-steps, each a separate test: (a) which TLMM tile holds GPIO 137 to 140, and the amplifier's ID over I2C (read only, after
+releasing its reset); (b) open the MI2S port over APR and watch it start; (c) the amplifier's start-up from `mono.cnt`;
+(d) a stream and a tone. The POCO's `hakios.sound.c` already does (b) and (d) for a TDM port, so (b) and (d) mainly swap the port
+configuration; (a) and (c) are new for this phone (a TFA98xx instead of the POCO's Awinic amplifiers).
+
+Not started yet. This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
+likely to stall.
+
