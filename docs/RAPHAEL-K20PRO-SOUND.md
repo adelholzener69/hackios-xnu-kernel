@@ -157,7 +157,19 @@ configuration; (a) and (c) are new for this phone (a TFA98xx instead of the POCO
 - **the pins show it: with the port running, the bit clock (137) changed 183,162 times in 200,000 samples and the word select
   (138) 30,746 times; before, neither moved.** The data line stays still (no stream yet).
 
-Next: (c) the amplifier's start-up from `mono.cnt`, with this clock running.
+**Sub-step (c), passed on a Redmi K20 Pro, 2026-11-07** (`adsp_step=12 tfa=1`, image with `ADSP=1` and `fw-audio/mono.cnt`):
+
+- the amplifier's start-up is NXP's own driver core (`bsd/dev/tfa98xx/`, Apache-2.0, from the phone's Android kernel) on the I2C bus
+  of `raphael_amp.c`, reading the phone's `mono.cnt` (12,503 bytes: TFA9874, rev 0x0c74, family 2, no DSP of its own,
+  3 profiles, the first `MUSIC_48000`);
+- `tfa_dev_start(profile 0)` returned 0 with the interface's clock running; held 3 s, clock and word select still running
+  (163,012 and 31,512 changes in 200,000 samples); `tfa_dev_stop` returned 0;
+- **15 messages for the speaker-protection module were not delivered**: the TFA9874 has no DSP, its protection algorithm
+  (SpeakerBoost) runs on the audio DSP as the module `TFADSP_RX` (0x1000B911, parameter 0x1000B921), fed back by the amplifier's
+  current/voltage sense through `TFADSP_TX` (0x1000B912) on the quaternary MI2S TX port. **No sound is played until that is in place**
+  (or the level is kept very low).
+
+Next: (c2) the protection: deliver the messages to the DSP, and run the feedback port. Then (d) a stream and a tone.
 
 This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
 likely to stall.

@@ -14,6 +14,7 @@
 #include "tfa98xx/inc/tfa_glue.h"
 
 extern void loader_log_putc(char c);
+extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 extern bool raphael_amp_open(void);
 extern void raphael_amp_reset_pulse(void);
 extern void raphael_amp_sleep(unsigned ms);
@@ -130,7 +131,28 @@ raphael_tfa_start(void (*say)(const char *))
 		return false;
 	}
 	tfa_glue_bus(&b);
-	container = hakios_adsp_fw_file("mono.cnt", &container_size);
+	{
+		/* the small image first (ADSP=1), else the root; a copy of our own, which the NXP code may write to */
+		uint64_t size = 0;
+		const uint8_t *file = hakios_image_file("fw", "mono.cnt", &size, NULL);
+		bool from_root = false;
+
+		if (file == NULL && (file = hakios_adsp_fw_file("mono.cnt", &size)) != NULL) {
+			from_root = true;
+		}
+		if (file != NULL) {
+			uint8_t *copy = kalloc_data(size, Z_WAITOK | Z_ZERO);
+
+			if (copy != NULL) {
+				memcpy(copy, file, size);
+				container = copy;
+				container_size = size;
+			}
+			if (from_root) {
+				hakios_adsp_fw_free(file, size);
+			}
+		}
+	}
 	if (container == NULL) {
 		say("tfa: no /fw/mono.cnt in the image (copy it to fw-audio/ and build with ADSP=1)\n");
 		return false;
@@ -169,7 +191,9 @@ raphael_tfa_stop(void (*say)(const char *))
 		say(line);
 	}
 	if (container != NULL) {
-		hakios_adsp_fw_free(container, container_size);
+		uint8_t *ours = __DECONST(uint8_t *, container);
+
+		kfree_data(ours, container_size);
 		container = NULL;
 	}
 }
