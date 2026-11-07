@@ -1122,6 +1122,7 @@ hakios_raphael_tone(uint32_t ms, uint32_t gain, uint32_t ramp_ms)
 
 static int16_t ring[RING_FRAMES * 2];
 static volatile uint32_t ring_head, ring_tail;  /* frames: written by the sink, taken by the feeder */
+static volatile uint64_t last_write_us;         /* when the latest write of any kind came (raphael's jitter buffer) */
 static volatile uint64_t last_sound_us;         /* when the latest write that was not silence came */
 static volatile bool feeder_runs, watcher_runs;
 static uint64_t fed_frames, silent_frames, ios_frames;
@@ -1148,6 +1149,9 @@ ios_sink(const int16_t *frames, uint32_t count)
 	OSMemoryBarrier();
 	ring_head = head + taken;
 	ios_frames += taken;
+	if (taken != 0) {
+		last_write_us = now_us();
+	}
 	if (sound) {
 		last_sound_us = now_us();
 	}
@@ -1155,6 +1159,9 @@ ios_sink(const int16_t *frames, uint32_t count)
 }
 
 static uint32_t guard_periods;                  /* periods through the guard */
+#define JITTER_FRAMES           2400            /* 50 ms */
+static bool jitter_primed;
+static uint32_t jitter_primes, jitter_dry, jitter_short;
 static uint32_t ios_gain = 64;                  /* raphael: what iOS plays is cut to this much out of 256 (boot-arg ios_gain) */
 static volatile bool guard_on;                  /* the amplifiers are on: what the guard lets through is heard */
 
@@ -1194,6 +1201,32 @@ period_fill_ios(unsigned period)
 	int16_t *samples = (int16_t *)(buffer + 4096 * period);
 	uint32_t tail = ring_tail, available = ring_head - tail, n = available < PERIOD_FRAMES ? available : PERIOD_FRAMES;
 
+	if (hakios_is_raphael()) {
+		/*
+		 * A jitter buffer: iOS writes at the pace the DSP plays, so the ring would sit nearly empty and a period would
+		 * often be only partly filled (silence in its tail: a hitch). Play only once JITTER_FRAMES are in the ring; if it
+		 * runs dry, wait for that many again; and once iOS has stopped writing (50 ms), let what is left out.
+		 */
+		bool writer_idle = now_us() - last_write_us > 50000;
+
+		if (!jitter_primed && (available >= JITTER_FRAMES || (writer_idle && available != 0))) {
+			jitter_primed = true;
+			jitter_primes++;
+		}
+		if (jitter_primed && available < PERIOD_FRAMES && !writer_idle) {
+			jitter_primed = false;      /* it ran dry while iOS is still writing */
+			jitter_dry++;
+			n = 0;
+		} else if (!jitter_primed) {
+			n = 0;
+		}
+		if (jitter_primed && n != 0 && n < PERIOD_FRAMES) {
+			jitter_short++;             /* (the tail of what iOS wrote) */
+		}
+		if (n == 0 && available == 0) {
+			jitter_primed = false;
+		}
+	}
 	OSMemoryBarrier();
 	for (uint32_t i = 0; i < n; i++) {
 		samples[2 * i] = ring[2 * ((tail + i) % RING_FRAMES)];
@@ -1263,6 +1296,10 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
 			}
 		}
 		sleep_ms(2);
+	}
+	if (hakios_is_raphael()) {
+		say("sound: the jitter buffer (50 ms): started %u times, ran dry %u times while iOS was still writing, %u periods were a tail\n",
+		    jitter_primes, jitter_dry, jitter_short);
 	}
 	say("sound: the feeder stops: %u periods written (%u could not be sent), %u given back (%u with an error), %u underflows; "
 	    "from iOS %llu frames came, %llu went to the DSP, %llu of silence filled in\n", sent, failed, written_done, write_errors,
