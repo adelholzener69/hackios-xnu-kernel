@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 1 done (read-only steps verified on the phone); the DSP is not booted yet.** Everything in the table below was read from this phone's
+Status: **milestone 2 done: the audio DSP boots on the phone and reports "up". The link (GLINK, QRTR) and APR are next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -78,6 +78,24 @@ Found on the way: GLINK's descriptor and our queue (shared-memory items 478/479)
 the POCO's boot chain creates them. The raphael Wi-Fi code does it itself (`glink_prepare` in `hakios.wifi.c`), so
 the audio DSP needs the same.
 
-**Next, milestone 2:** the writes. The APCS doorbells (GLINK bit 8, SMP2P bit 10), the always-on processor's
-mailbox, TrustZone image 1, our SMP2P item, the GLINK items, and the DSP's rails; then watch for "up".
-`adsp=1` and `adsp_step` above 2 are refused on raphael until those are adapted.
+**Milestone 2 (the writes), passed on a Redmi K20 Pro, 2026-11-07.** Boot with `adsp_step=7`. Steps 3 to 7 ran:
+
+- the always-on processor's mailbox opened (doorbell: APCS bit 0);
+- TrustZone accepted the firmware header (image 1) and took the 36 MiB region;
+- all 13 segments written (14,244,900 bytes, 21 MB cleared), read back with 0 differences. One segment is 0x54
+  bytes long, so the writer pads the last 8-byte word with zeros;
+- our SMP2P item (429) and GLINK's descriptor and queue (478/479) made in our partition with the DSP (raphael's boot
+  chain makes none of them);
+- CX at its turbo position and the crystal oscillator voted (the audio DSP's proxy votes on SM8150, kept until restart);
+  the always-on processor told "adsp: on"; TrustZone authenticated the image and released the DSP from reset;
+- **the DSP's SMP2P item appeared 8 ms later and it said "up" (`slave-kernel = 0x6`) after 13 ms**, having asked for
+  its own power; it made its own GLINK queue (480) and two more items (606, 611);
+- shut down cleanly: it acknowledged the stop in 1.9 ms, TrustZone shut it down, the always-on processor was told "off".
+
+What changed in the code (`hakios.adsp.c`, plus one exported helper in `hakios.wifi.c`): the doorbells (`ring_dsp`,
+`ring_aop`: APCS bits 8, 10 and 0), polling instead of IPCC, the shared memory at `0x86000000`, the DSP's memory,
+`item_make()` and `glink_prepare()`, and the proxy votes (`hakios_raphael_cx_xo_proxy()`).
+
+**Next, milestone 3:** the link. GLINK's channels, QRTR on `IPCRTR`, and APR on `apr_audio_svc`, to see whether the
+audio services come up (steps 8 to 11, `adsp_step=11`). `adsp=1` stays refused on raphael: it would also start the
+POCO's speaker path, whose addresses are not this phone's.

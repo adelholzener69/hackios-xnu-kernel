@@ -1126,6 +1126,60 @@ mpss_proxy(void)
 	return wifi_rpmh_write(addresses, values, 3);
 }
 
+/*
+ * The audio DSP's proxy votes on raphael (hakios.adsp.c): CX at its turbo position and the crystal
+ * oscillator, as Linux's qcom_q6v5_pas makes them for SM8150's adsp (proxy_pd_names "cx", proxy_clk_names
+ * "xo"). Made exactly as mpss_proxy() makes the modem's, minus the modem's own MSS rail, and kept until the
+ * reboot for the same reason: a vote given back could take away what the rest of the system relies on.
+ */
+bool
+hakios_raphael_cx_xo_proxy(void)
+{
+	static const char *const names[] = { "cx.lvl", "xo.lvl" };
+	uint32_t addresses[2], values[2] = { 0, 3 };
+	const uint32_t db_bytes = CMD_DB_SIZE - __offsetof(struct cmd_db_header, data);
+
+	for (unsigned i = 0; i < 2; i++) {
+		const struct cmd_db_entry *entry = rpmh_resource(names[i], 0);
+		bool found = i == 1;
+
+		if (entry == NULL || (entry->address >> 16 & 0xf) != 3) {
+			return false;
+		}
+		addresses[i] = entry->address;
+		if (i == 0) {
+			for (unsigned j = 0; j < 8; j++) {
+				const struct cmd_db_slave *slave = &cmd_db->slave[j];
+				const struct cmd_db_entry *first = (const void *)(cmd_db->data + slave->header_offset);
+				uint32_t start = (uint32_t)slave->data_offset + entry->offset;
+
+				if (entry < first || entry >= first + slave->count || start > db_bytes || entry->length > db_bytes - start) {
+					continue;
+				}
+				for (unsigned l = 0; l < entry->length / 2u; l++) {
+					const uint8_t *data = cmd_db->data + start + 2 * l;
+					uint32_t level = data[0] | data[1] << 8;
+
+					if (level == 0 && l != 0) {
+						break;
+					}
+					if (level >= 384) {
+						values[i] = l;
+						found = true;
+						break;
+					}
+				}
+			}
+		}
+		if (!found) {
+			printf("adsp: the audio DSP has no TURBO position for %s\n", names[i]);
+			return false;
+		}
+		printf("adsp: audio DSP proxy %s: address %#x, vote %u\n", names[i], addresses[i], values[i]);
+	}
+	return wifi_rpmh_write(addresses, values, 2);
+}
+
 /* ---- step 4: the supplies themselves ------------------------------------------------------------------- */
 
 /*
