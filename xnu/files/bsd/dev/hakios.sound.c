@@ -1206,6 +1206,12 @@ ios_sink(const int16_t *frames, uint32_t count)
 			ios_peak = l > r ? l : r;
 		}
 	}
+	/* what did not fit is looked at all the same: sound that is turned away still has to wake the amplifier (raphael) */
+	for (uint32_t i = taken; !sound && i < count; i++) {
+		int16_t left = frames[2 * i], right = frames[2 * i + 1];
+
+		sound = (left < 0 ? -(int32_t)left : left) > SILENCE || (right < 0 ? -(int32_t)right : right) > SILENCE;
+	}
 	OSMemoryBarrier();
 	ring_head = head + taken;
 	ios_frames += taken;
@@ -1287,7 +1293,13 @@ period_fill_ios(unsigned period)
 		bool writer_idle = now_us() - last_write_us > 50000;
 
 		if (!ios_amp_ready) {
-			/* the amplifier is off (started when sound comes): what iOS wrote waits in the ring until it is up */
+			/*
+			 * The amplifier is off (started when sound comes): sound iOS has written waits in the ring until it is up, but what is
+			 * old and silent is thrown away: a ring left full of it would turn the next sound away at the door.
+			 */
+			if (now_us() - last_sound_us > 300000) {
+				tail = ring_head;
+			}
 			available = 0;
 			n = 0;
 			jitter_primed = false;
