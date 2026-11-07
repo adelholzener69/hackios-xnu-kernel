@@ -17,7 +17,7 @@ stands:
 | Wi-Fi | yes (WCN6750) | **yes** (WCN3990, ath10k) | works; slow to find networks; no reconnect after toggling Wi-Fi (known upstream bug) |
 | Battery level, charging state | yes | **yes** | read-only, via the firmware's Qualcomm charger drivers (commit `84647ba`) |
 | Brightness control | not found in the repo | **yes** (panel's own brightness) | done: the slider's level is caught in `backboardd`, passed to the kernel (`kern.hakios.brightness`) and sent to the Samsung EA8076 as DCS `0x51` through the DSI controller. Boot arguments `brightness=1 brightness_dcs=1`. Auto-brightness and the ambient-light sensor are not supported |
-| **Sound** | yes (DSP + Awinic amps) | **no** | speaker-only path first. The POCO port's audio code is step-by-step: boot the audio DSP through TrustZone, open its GLINK link, QRTR, then APR to the audio services (`bsd/dev/hakios.adsp.c`, `hakios.sound.c`); the same APR protocol applies to your SM8150. What changes is device-specific: the DSP's memory and firmware (`adsp.mdt` + 14 segments, present in the modem partition image), the SMP2P/GLINK numbers, the doorbell (SM8150 uses the APCS mailbox, not IPCC) and the speaker path (NXP TFA98xx amplifiers, which need the phone's amp configuration file). Headphones and microphones need the SLIMbus codec (WCD9341), which is much harder |
+| **Sound** | yes (DSP + Awinic amps) | **yes (loudspeaker)** | iOS's sound plays through the audio DSP, the NXP TFA9874 amplifier and the DSP's speaker protection: [RAPHAEL-K20PRO-SOUND.md](RAPHAEL-K20PRO-SOUND.md). Headphones and microphones need the SLIMbus codec (WCD9341), which is much harder |
 | **Auto-brightness** | not found in the repo | **no** | needs the ambient light sensor. It is not on a bus the main processor can read; sensors on Qualcomm phones sit behind a DSP. No `slpi` firmware is in the modem image (it may run on the audio DSP instead), so this waits until the audio DSP is up. iOS's own auto-brightness needs calibration data, so a simple curve of our own, feeding the same brightness path, is the realistic plan |
 | **Bluetooth** | not enabled | **no** | WCN3990 over UART; the open problem is iOS's Bluetooth stack, which no HakiOS port provides |
 | Storage (keep data between boots) | yes (UFS) | **no** | storage driver for raphael |
@@ -27,7 +27,7 @@ stands:
 
 ## Order of work
 
-1. Speaker-only sound.
+1. ~~Speaker-only sound~~ (done).
 2. Haptics and torch.
 3. Storage persistence.
 4. Cellular, then cameras.

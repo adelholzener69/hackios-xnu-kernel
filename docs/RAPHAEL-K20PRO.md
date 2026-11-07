@@ -1,6 +1,6 @@
 # Quickstart: iOS 16 on the Redmi K20 Pro / Mi 9T Pro (`raphael`)
 
-This branch (`raphael-k20pro`) runs **iOS 16.5 with a working GPU, touch and Wi-Fi** on the Redmi K20 Pro
+This branch (`raphael-k20pro`) runs **iOS 16.5 with a working GPU, touch, Wi-Fi and loudspeaker** on the Redmi K20 Pro
 (Snapdragon 855). It is HakiOS's `raphael-bringup` port plus fixes that let it boot on phones whose
 firmware differs from the original author's, and helper scripts in `devices/raphael/kit/` that build
 the UEFI **from your own phone's firmware**. **No firmware, no Apple files and no built images are in
@@ -19,7 +19,8 @@ this repository or ever should be** (see [Safety](#safety-and-legal)).
 | Wi-Fi | yes (upstream verified 5 GHz WPA3), but slow to find networks, and it will not reconnect after you switch Wi-Fi off and on (restart the session) |
 | Battery level and charging state | yes, read-only, taken from the phone's own firmware |
 | Brightness slider | yes: the panel's own brightness (see below) |
-| Sound, Bluetooth, cellular, cameras, torch, haptics | **no** |
+| Sound | yes, the loudspeaker (needs your phone's audio DSP firmware and amplifier file; see [RAPHAEL-K20PRO-SOUND.md](RAPHAEL-K20PRO-SOUND.md) for the boot arguments) |
+| Bluetooth, cellular, cameras, torch, haptics | **no** |
 | Saving anything | **no**: RAM only, every start is a fresh iOS |
 
 Details, and how this compares with HakiOS's main phone (POCO X5 Pro): [docs/RAPHAEL-K20PRO-STATUS.md](RAPHAEL-K20PRO-STATUS.md).
