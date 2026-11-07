@@ -206,7 +206,7 @@ static unsigned tfadsp_sent, tfadsp_refused, tfadsp_read;
 #define M_OP_UNMAP              0x000100ecu
 #define M_POOL_SHMEM8_4K        3u
 #define M_INBAND_BUFFER         1024u
-static uint32_t inband_max = 384;           /* boot-arg tfa_inband=N: the longest message sent in band (at most 1024) */
+static uint32_t inband_max = 72;            /* boot-arg tfa_inband=N: the longest message sent in band (at most 1024) */
 
 static int tfadsp_version = 3;
 static uint32_t tfadsp_force_outband;      /* boot-arg tfa_oob=1: every message through memory (a test) */

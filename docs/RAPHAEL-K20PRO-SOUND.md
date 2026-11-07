@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 4a and 4b done (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
+Status: **milestone 4a, 4b, 4c done (the amplifier starts from its container, its protection messages are delivered) (the amplifier answers over I2C; the DSP runs the speaker interface's clock) (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -169,7 +169,25 @@ configuration; (a) and (c) are new for this phone (a TFA98xx instead of the POCO
   current/voltage sense through `TFADSP_TX` (0x1000B912) on the quaternary MI2S TX port. **No sound is played until that is in place**
   (or the level is kept very low).
 
-Next: (c2) the protection: deliver the messages to the DSP, and run the feedback port. Then (d) a stream and a tone.
+**Sub-step (c2), passed on a Redmi K20 Pro, 2026-11-07: the speaker-protection messages are delivered.** All 15 messages of the
+container's start-up reach the audio DSP's `TFADSP_RX` module (0 refused), and `tfa_dev_start` returns 0 with the interface running:
+
+- in band (inside the APR packet) the DSP takes the command `SET_PARAM_V3` (0x100fa: port, memory header, payload size; the
+  parameter header has an instance id), but only up to about 72 bytes of message: the DSP offers the APR channel 128-byte GLINK
+  intents only (the others, 512, 1152 and 8320 bytes, are on the RPC channel);
+- longer messages (153 to 549 bytes: the speaker model, the configuration, the presets) go through memory of ours, as Android does for all
+  of them: one page behind SMMU stream 0x1b21 (this phone's `qcom,msm-audio-ion`; `hakios.sound.c`'s code, now with the stream
+  chosen per phone), mapped for the AFE service (`AFE_SERVICE_CMD_SHARED_MEM_MAP_REGIONS`, pool 3, **one 4 KB page: 64 KB did not work**),
+  and the older `SET_PARAM_V2` command (the v3 command through memory is refused);
+- **the DSP reads memory, not our caches**: without cleaning the lines (`dc civac`) before the command it saw stale data, and refused
+  everything longer than a few bytes with "bad parameter". This cost six test runs.
+
+Still missing for the protection: the feedback port (the amplifier's current and voltage sense, `TFADSP_TX` on the TX port 0x1007,
+data line GPIO 140) and the `TFADSP_RX` bypass/enable settings. Next: that, then (d) a stream and a tone, quiet.
+
+**Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
+2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the
+end for want of `launchd`, which does not matter. It saves about two minutes of each run.
 
 This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
 likely to stall.
