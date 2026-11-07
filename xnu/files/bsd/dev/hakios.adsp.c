@@ -2652,15 +2652,20 @@ bool
 hakios_adsp_apr(uint8_t service, uint16_t port, uint32_t token, uint32_t opcode, const void *payload, uint32_t length,
     uint32_t ms, struct hakios_apr_answer *answer)
 {
-	uint8_t packet[sizeof(struct apr_header) + 256];
-	struct apr_header *header = (struct apr_header *)packet;
+	uint8_t *packet;
+	struct apr_header *header;
 	bool answered = false;
 	int error;
+	const uint32_t packet_size = (uint32_t)sizeof(struct apr_header) + (length > 256 ? length : 256);
 
-	if (length > sizeof(packet) - sizeof(*header) || !glink.channel[CHANNEL_APR].open) {
+	if (length > 4096 || !glink.channel[CHANNEL_APR].open) {
 		return false;
 	}
-	bzero(packet, sizeof(packet));
+	packet = kalloc_data(packet_size, Z_WAITOK | Z_ZERO);
+	if (packet == NULL) {
+		return false;
+	}
+	header = (struct apr_header *)packet;
 	header->field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD, sizeof(*header));
 	header->size = (uint16_t)(sizeof(*header) + length);
 	header->from_service = service;
@@ -2678,6 +2683,7 @@ hakios_adsp_apr(uint8_t service, uint16_t port, uint32_t token, uint32_t opcode,
 		header->token = token;
 		error = glink_send(&glink.channel[CHANNEL_APR], packet, (uint32_t)sizeof(*header) + length);
 		apr_out += error == 0;
+		kfree_data(packet, packet_size);
 		return error == 0;
 	}
 	lck_mtx_lock(&apr_lock);
@@ -2711,6 +2717,7 @@ hakios_adsp_apr(uint8_t service, uint16_t port, uint32_t token, uint32_t opcode,
 	}
 	apr_waited_for = 0;
 	lck_mtx_unlock(&apr_lock);
+	kfree_data(packet, packet_size);
 	return answered;
 }
 

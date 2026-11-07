@@ -79,6 +79,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/hakios.audio.h>
+#include <sys/hakios.input.h>
 #include <vm/vm_kern.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -525,7 +526,7 @@ static struct block apps_smmu_context = { "apps smmu, the audio context", 0, 0x1
 #define PTE_ADDRESS             0x0000fffffffff000ull
 #define AUDIO_PTE               (3ull | 1ull << 6 | 2ull << 8 | 1ull << 10 | 1ull << 11)       /* as hakios.wifi.c's */
 
-#define AUDIO_STREAM            0x1801
+#define AUDIO_STREAM            (hakios_is_raphael() ? 0x1b21u : 0x1801u)       /* qcom,msm-audio-ion's iommus entry: redwood 0x1801, raphael 0x1b21 */
 #define AUDIO_ADDRESSES         0x10000000ull   /* dt: qcom,iommu-dma-addr-pool of qcom,msm-audio-ion */
 #define AUDIO_STREAM_BITS       (1ull << 32)    /* the stream's low bits (0x1801 & 0xf), where the DSP takes them from */
 
