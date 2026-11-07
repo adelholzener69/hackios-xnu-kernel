@@ -1,3 +1,9 @@
+> **English quickstart for this branch (`raphael-k20pro`): [docs/RAPHAEL-K20PRO.md](docs/RAPHAEL-K20PRO.md).**
+> It builds the UEFI from *your* phone's firmware (the release UEFI described below only boots on the
+> author's firmware) and covers GPU, touch, Wi-Fi and battery. Status and roadmap:
+> [docs/RAPHAEL-K20PRO-STATUS.md](docs/RAPHAEL-K20PRO-STATUS.md). The rest of this file is upstream's
+> original (Chinese) test guide.
+
 # HakiOS · Redmi K20 Pro / Mi 9T Pro 测试指南
 
 本分支将 XNU 和 iOS 用户态移植到 **Redmi K20 Pro / Mi 9T Pro（代号 `raphael`）**，供开发和实验测试使用。本文面向希望在自己的设备上体验、验证和反馈问题的用户。
