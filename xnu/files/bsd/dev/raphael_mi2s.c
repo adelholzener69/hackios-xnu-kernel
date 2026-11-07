@@ -269,73 +269,88 @@ raphael_tfadsp_close(void)
 	}
 }
 
-/* one SET_PARAM (v2 command) with the parameter in memory of ours: header at the start, then the message */
+/*
+ * One SET_PARAM for the TFADSP_RX module, `version' 3 (command 0x100fa: port, memory header, payload size; the
+ * parameter has a header with an instance id) or 2 (0x100ef: port, payload size, memory header; header without).
+ * In band if it is short (inband), else in memory of ours.
+ */
 static bool
-tfadsp_set_outband(const char *message, unsigned length, unsigned padded, struct hakios_apr_answer *a)
+tfadsp_set(int version, const char *message, unsigned length, struct hakios_apr_answer *a)
 {
-	struct m_param *param = (struct m_param *)space_va;
-	uint8_t packet[16];
+	uint8_t packet[24 + sizeof(struct m_param3) + M_INBAND_MAX];
+	unsigned padded = (length + 3u) & ~3u;
+	unsigned header = version == 3 ? (unsigned)sizeof(struct m_param3) : (unsigned)sizeof(struct m_param);
+	bool inband = padded <= M_INBAND_MAX;
+	uint8_t *param;
+	unsigned command_bytes = version == 3 ? 20 : 16;
+	uint64_t address = 0;
+	uint32_t handle = 0;
 
-	if (!tfadsp_space() || sizeof(*param) + padded > space_bytes) {
-		return false;
+	if (inband) {
+		bzero(packet, sizeof(packet));
+		param = packet + command_bytes;
+	} else {
+		if (!tfadsp_space() || header + padded > space_bytes) {
+			return false;
+		}
+		bzero((void *)space_va, header + padded);
+		param = (uint8_t *)space_va;
+		address = space_dsp;
+		handle = space_handle;
+		bzero(packet, command_bytes);
 	}
-	bzero((void *)space_va, sizeof(*param) + padded);
-	param->module = M_MOD_TFADSP_RX;
-	param->param = M_PARAM_TFADSP_RX_CFG;
-	param->size = (uint16_t)padded;
-	memcpy((uint8_t *)space_va + sizeof(*param), message, length);
+	if (version == 3) {
+		struct m_param3 *p = (struct m_param3 *)param;
+
+		p->module = M_MOD_TFADSP_RX;
+		p->param = M_PARAM_TFADSP_RX_CFG;
+		p->size = padded;
+	} else {
+		struct m_param *p = (struct m_param *)param;
+
+		p->module = M_MOD_TFADSP_RX;
+		p->param = M_PARAM_TFADSP_RX_CFG;
+		p->size = (uint16_t)padded;
+	}
+	memcpy(param + header, message, length);
+	if (version == 3) {
+		*(uint16_t *)packet = M_PORT;
+		*(uint32_t *)(packet + 4) = (uint32_t)address;
+		*(uint32_t *)(packet + 8) = (uint32_t)(address >> 32);
+		*(uint32_t *)(packet + 12) = handle;
+		*(uint32_t *)(packet + 16) = header + padded;
+	} else {
+		*(uint16_t *)packet = M_PORT;
+		*(uint16_t *)(packet + 2) = (uint16_t)(header + padded);
+		*(uint32_t *)(packet + 4) = (uint32_t)address;
+		*(uint32_t *)(packet + 8) = (uint32_t)(address >> 32);
+		*(uint32_t *)(packet + 12) = handle;
+	}
 	__asm__ volatile ("dsb sy" ::: "memory");
-	*(uint16_t *)packet = M_PORT;
-	*(uint16_t *)(packet + 2) = (uint16_t)(sizeof(*param) + padded);
-	*(uint32_t *)(packet + 4) = (uint32_t)space_dsp;
-	*(uint32_t *)(packet + 8) = (uint32_t)(space_dsp >> 32);
-	*(uint32_t *)(packet + 12) = space_handle;
-	return hakios_adsp_apr(M_AFE, M_PORT, 0, M_OP_SET_PARAM_V2, packet, sizeof(packet), M_WAIT_MS, a);
+	return hakios_adsp_apr(M_AFE, M_PORT, 0, version == 3 ? M_OP_SET_PARAM_V3 : M_OP_SET_PARAM_V2, packet,
+	           inband ? command_bytes + header + padded : command_bytes, M_WAIT_MS, a);
 }
 
 int
 raphael_tfadsp_write(const char *message, unsigned length)
 {
-	uint8_t packet[16 + sizeof(struct m_param3) + M_INBAND_MAX];
-	unsigned padded = (length + 3u) & ~3u;
 	struct hakios_apr_answer a;
 	bool sent;
 
 	tfadsp_sent++;
+	say("mi2s: TFADSP message %u: %u bytes, %02x %02x %02x %02x %02x %02x\n", tfadsp_sent, length, (uint8_t)message[0],
+	    (uint8_t)message[1], (uint8_t)message[2], (uint8_t)message[3], (uint8_t)message[4], (uint8_t)message[5]);
 	for (;;) {
-		uint32_t opcode = tfadsp_version == 3 ? M_OP_SET_PARAM_V3 : M_OP_SET_PARAM_V2;
-		unsigned header = tfadsp_version == 3 ? (unsigned)sizeof(struct m_param3) : (unsigned)sizeof(struct m_param);
-
-		if (padded > M_INBAND_MAX) {
-			sent = tfadsp_set_outband(message, length, padded, &a);
-		} else {
-			bzero(packet, 16 + header + padded);
-			*(uint16_t *)packet = M_PORT;
-			*(uint16_t *)(packet + 2) = (uint16_t)(header + padded);
-			if (tfadsp_version == 3) {
-				struct m_param3 *p = (struct m_param3 *)(packet + 16);
-
-				p->module = M_MOD_TFADSP_RX;
-				p->param = M_PARAM_TFADSP_RX_CFG;
-				p->size = padded;
-			} else {
-				struct m_param *p = (struct m_param *)(packet + 16);
-
-				p->module = M_MOD_TFADSP_RX;
-				p->param = M_PARAM_TFADSP_RX_CFG;
-				p->size = (uint16_t)padded;
-			}
-			memcpy(packet + 16 + header, message, length);
-			sent = hakios_adsp_apr(M_AFE, M_PORT, 0, opcode, packet, 16 + header + padded, M_WAIT_MS, &a);
-		}
+		sent = tfadsp_set(tfadsp_version, message, length, &a);
 		if (sent && a.opcode == M_RESULT && a.words[1] == 0) {
 			if (tfadsp_sent == 1) {
 				say("mi2s: the DSP takes TFADSP messages with parameter header version %d\n", tfadsp_version);
 			}
+			delay_for_interval(5, NSEC_PER_MSEC);      /* (Android waits 2 ms after each) */
 			return 0;
 		}
-		if (tfadsp_version == 3 && sent && a.opcode == M_RESULT && a.words[1] == 2 && padded <= M_INBAND_MAX) {
-			say("mi2s: version 3 refused as a bad parameter; trying version 2\n");
+		if (tfadsp_version == 3 && tfadsp_sent == 1 && sent && a.opcode == M_RESULT && a.words[1] != 0) {
+			say("mi2s: version 3 refused (status %u); trying version 2\n", a.words[1]);
 			tfadsp_version = 2;
 			continue;
 		}
@@ -351,40 +366,53 @@ raphael_tfadsp_write(const char *message, unsigned length)
 int
 raphael_tfadsp_read(uint8_t *result, unsigned length)
 {
-	struct {
-		uint16_t port, size;
-		uint32_t low, high, handle;
-		uint32_t module, param;
-		struct m_param header;
-	} __attribute__((packed)) get;
+	uint8_t packet[40];
 	unsigned padded = (length + 3u) & ~3u;
+	unsigned header = tfadsp_version == 3 ? (unsigned)sizeof(struct m_param3) : (unsigned)sizeof(struct m_param);
+	unsigned bytes;
 	struct hakios_apr_answer a;
 
 	tfadsp_read++;
-	if (!tfadsp_space() || sizeof(struct m_param) + padded > space_bytes) {
+	if (!tfadsp_space() || header + padded > space_bytes) {
 		return 1;
 	}
-	bzero((void *)space_va, sizeof(struct m_param) + padded);
+	bzero((void *)space_va, header + padded);
+	bzero(packet, sizeof(packet));
 	__asm__ volatile ("dsb sy" ::: "memory");
-	get.port = M_PORT;
-	get.size = (uint16_t)padded;
-	get.low = (uint32_t)space_dsp;
-	get.high = (uint32_t)(space_dsp >> 32);
-	get.handle = space_handle;
-	get.module = M_MOD_TFADSP_RX;
-	get.param = M_PARAM_TFADSP_RX_GET;
-	get.header.module = M_MOD_TFADSP_RX;
-	get.header.param = M_PARAM_TFADSP_RX_GET;
-	get.header.size = (uint16_t)padded;
-	get.header.reserved = 0;
-	if (!hakios_adsp_apr(M_AFE, M_PORT, 0, M_OP_GET_PARAM_V2, &get, sizeof(get), M_WAIT_MS, &a) ||
-	    (a.opcode == M_RESULT && a.words[1] != 0) || (a.opcode != M_RESULT && a.opcode != M_RSP_GET_PARAM_V2)) {
+	*(uint16_t *)packet = M_PORT;
+	if (tfadsp_version == 3) {
+		struct m_param3 *p = (struct m_param3 *)(packet + 16);
+
+		*(uint32_t *)(packet + 4) = (uint32_t)space_dsp;
+		*(uint32_t *)(packet + 8) = (uint32_t)(space_dsp >> 32);
+		*(uint32_t *)(packet + 12) = space_handle;
+		p->module = M_MOD_TFADSP_RX;
+		p->param = M_PARAM_TFADSP_RX_GET;
+		p->size = padded;
+		bytes = 16 + (unsigned)sizeof(*p);
+	} else {
+		struct m_param *p = (struct m_param *)(packet + 28);
+
+		*(uint16_t *)(packet + 2) = (uint16_t)padded;
+		*(uint32_t *)(packet + 4) = (uint32_t)space_dsp;
+		*(uint32_t *)(packet + 8) = (uint32_t)(space_dsp >> 32);
+		*(uint32_t *)(packet + 12) = space_handle;
+		*(uint32_t *)(packet + 16) = M_MOD_TFADSP_RX;
+		*(uint32_t *)(packet + 20) = M_PARAM_TFADSP_RX_GET;
+		p->module = M_MOD_TFADSP_RX;
+		p->param = M_PARAM_TFADSP_RX_GET;
+		p->size = (uint16_t)padded;
+		bytes = 28 + (unsigned)sizeof(*p);
+	}
+	if (!hakios_adsp_apr(M_AFE, M_PORT, 0, tfadsp_version == 3 ? M_OP_GET_PARAM_V3 : M_OP_GET_PARAM_V2, packet, bytes,
+	    M_WAIT_MS, &a) || (a.opcode == M_RESULT && a.words[1] != 0) ||
+	    (a.opcode != M_RESULT && a.opcode != M_RSP_GET_PARAM_V2 && a.opcode != M_RSP_GET_PARAM_V3)) {
 		say("mi2s: TFADSP read %u (%u bytes): %s %#x\n", tfadsp_read, length, a.opcode == M_RESULT ? "refused, status" :
 		    "no answer / opcode", a.opcode == M_RESULT ? a.words[1] : a.opcode);
 		return 1;
 	}
 	__asm__ volatile ("dsb sy" ::: "memory");
-	memcpy(result, (const uint8_t *)space_va + sizeof(struct m_param), length);
+	memcpy(result, (const uint8_t *)space_va + header, length);
 	return 0;
 }
 
