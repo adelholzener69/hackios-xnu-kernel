@@ -19,7 +19,7 @@ this repository or ever should be** (see [Safety](#safety-and-legal)).
 | Wi-Fi | yes (upstream verified 5 GHz WPA3), but slow to find networks, and it will not reconnect after you switch Wi-Fi off and on (restart the session) |
 | Battery level and charging state | yes, read-only, taken from the phone's own firmware |
 | Brightness slider | yes: the panel's own brightness (see below) |
-| Sound | yes, the loudspeaker (needs your phone's audio DSP firmware and amplifier file; see [RAPHAEL-K20PRO-SOUND.md](RAPHAEL-K20PRO-SOUND.md) for the boot arguments) |
+| Sound | yes, the loudspeaker, volume buttons included (optional: needs your phone's audio DSP firmware and amplifier file `mono.cnt`; [RAPHAEL-K20PRO-SOUND.md](RAPHAEL-K20PRO-SOUND.md) has the files and the boot arguments) |
 | Bluetooth, cellular, cameras, torch, haptics | **no** |
 | Saving anything | **no**: RAM only, every start is a fresh iOS |
 

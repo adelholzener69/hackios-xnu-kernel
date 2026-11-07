@@ -201,24 +201,48 @@ had chosen made it flag an error and shut down. With 24 bits (AFE I2S config `bi
 `pcm_format` 24) it stays up and plays. Also needed: the un-mute Android's driver does after each start.
 
 **iOS's sound plays through the speaker, smooth (a Redmi K20 Pro, 2026-11-07).** Boot (the full image, `RC_JOBS=devices/raphael/raphael-sound.jobs` for the
-test session) with `adsp_step=12 adsp_keep=1 tfa=1 tfa_tx=1 ios_audio=1 ios_gain=64`: the port, the feedback port and the amplifier stay up for
+test session) with `adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1`: the port, the feedback port and the amplifier stay up for
 the whole run, and `/dev/hakios-audio` (iOS's audio server, through `HakiosAudio.driver`) is fed to the DSP by the same feeder the POCO uses, without that
 phone's guard (the DSP's TFADSP is the protection here). The tone iOS played through an audio queue, the system sounds and the owner's ringtones all
 came out of the loudspeaker.
 
-- `ios_gain` (out of 256, default 64: 12 dB under) is a digital cap of ours on top of iOS's own volume; raise it (up to 256) to taste;
+- `ios_gain` (out of 256, default 128: 6 dB under) is a digital cap of ours on top of iOS's own volume; raise it (up to 256) to taste.
+  **The volume buttons work as on the POCO**: iOS sets the speaker's volume control once, to the top, and scales the samples itself
+  (software volume), so the level follows the buttons and Control Center without the kernel doing anything; the control's value is also
+  applied (`volume_gain()`, a table of decibels) if iOS ever moves it;
 - **the first version hitched on ringtones**: iOS writes at the pace the DSP plays, so the ring was nearly empty and periods often went out part-filled
   with silence. A 50 ms jitter buffer in front of the DSP (play once 50 ms are in the ring, wait again if it runs dry, let the tail out
-  50 ms after iOS stops writing) fixed it: in the next run it started 3 times, never ran dry while iOS was writing, 0 underflows; the owner: "smooth";
-- everything is stopped in order when the run ends (amplifier, feedback, ports, clock, pins).
+  50 ms after iOS stops writing) fixed it ("smooth", the owner); it still runs dry a few times in a long session, briefly;
+- everything is stopped in order when the run ends (amplifier, feedback, ports, clock, pins); on a kernel panic the amplifier is put into
+  power-down (`hakios_sound_quiesce`).
 
-Not done: iOS's volume buttons do not change the amplifier (only iOS's own scaling of the samples); the amplifier and the feedback port stay on for
-the run even when nothing plays (battery); the panic path does not switch the amplifier off (`hakios_sound_quiesce` is the POCO's).
+**The amplifier stays on for the whole run.** An idle power-down (`ios_amp_idle=N` seconds: the amplifier is powered down after N seconds of
+silence and started again, with the protection messages, when sound comes; what iOS wrote waits in the ring meanwhile) is built but **does not
+work yet**: the first sound after the first power-down is heard, the next ones are not, although the kernel sends the samples (ring full,
+gain right, peaks of the expected size), the amplifier's registers show it engaged, and the DSP accepts all the protection messages. The same
+power-cycle in the kernel-only tone test (`tone_repeat=4`, where the audio stream is restarted each time) is fine, so the DSP side loses
+the amplifier when only the amplifier is cycled under a running stream. Not understood; leaving the amplifier on costs a little battery.
+(Two bugs on the way, for the record: the volume table held 65536 in a 16-bit field, which made the gain 0; and the status registers show
+nothing wrong in the failing case, which is why a status line, `ios_debug=1`, and the restart test exist.)
 
 **Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
 2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the
 end for want of `launchd`, which does not matter. It saves about two minutes of each run.
 
-This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
-likely to stall.
+## How to use it
 
+Files from your own phone (never in the repository), in `fw-audio/` next to the repository: the audio DSP's firmware (`adsp.mdt`, `adsp.b*`;
+`devices/raphael/kit/pull-firmware.sh` copies them) and the amplifier's container `mono.cnt` (from the phone's `/vendor/firmware/mono.cnt`,
+e.g. `adb pull` in TWRP with the vendor partition mounted, or from the stock ROM's vendor image). Build the images with `ADSP=1`
+(`FLASHBOOT=prepared SYSTEM=1 ADSP=1 devices/raphael/build.sh images`), then boot as in the quickstart with these added to the kernel command line:
+
+```
+adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1
+```
+
+Optional: `ios_gain=N` (out of 256, default 128) caps the loudest level; `tone=MS tone_gain=N tone_ramp_ms=MS tone_repeat=N` (with
+`adsp_step=12 tfa=1 tfa_tx=1`, no `ios_audio`) plays a quiet test tone from the kernel alone (no iOS, no 2.4 GB system image);
+`tfa_debug=1` dumps the amplifier's registers; `ios_debug=1` says what the feeder does twice a second.
+
+Things worth knowing: the amplifier is protected by the audio DSP's algorithm, not by a limit of ours, but start quietly all the same (a first tone at
+`tone_gain=4`); the speaker is a real one. Kernel panics put the amplifier into power-down.
