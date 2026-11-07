@@ -403,8 +403,9 @@ amp_ids(const char *when)
 static void
 amp_thread(void *arg __unused, wait_result_t result __unused)
 {
+	amp_wait(20000); /* the kernel log only keeps what is printed after user space starts */
 	st.gcc = ml_io_map(0x00100000u, 0x60000);
-	st.gpio = ml_io_map(0x03d00000u, 0x7b000);
+	st.gpio = ml_io_map(0x03d00000u, 0x90000);
 	st.se = ml_io_map(0x00884000u, 0x4000);
 	if (!st.gcc || !st.gpio || !st.se) {
 		printf("raphael-amp: mapping failed\n");

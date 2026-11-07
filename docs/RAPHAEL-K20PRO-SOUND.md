@@ -1,6 +1,6 @@
 # Sound on the Redmi K20 Pro: plan and verified numbers
 
-Status: **milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
+Status: **milestone 4a done (the speaker amplifier answers over I2C: TFA9874). Milestone 3 done: the audio DSP boots, links up (GLINK, QRTR) and its APR audio services are up. The speaker path is next.** Everything in the table below was read from this phone's
 own device tree (`raphael` DTB built by `devices/raphael/kit/build-raphael-dtb.py`) or its ROM; the
 "POCO" column is what the existing audio code for the POCO X5 Pro (`bsd/dev/hakios.adsp.c`) uses.
 
@@ -139,6 +139,18 @@ releasing its reset); (b) open the MI2S port over APR and watch it start; (c) th
 (d) a stream and a tone. The POCO's `hakios.sound.c` already does (b) and (d) for a TDM port, so (b) and (d) mainly swap the port
 configuration; (a) and (c) are new for this phone (a TFA98xx instead of the POCO's Awinic amplifiers).
 
-Not started yet. This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
+**Sub-step (a), passed on a Redmi K20 Pro, 2026-11-07** (boot-arg `amp_probe=1`, `bsd/dev/raphael_amp.c`, read only):
+
+- the pins for GPIO 137 to 141 are in the south TLMM tile, whose registers reach 0x8d000 (the touch screen driver maps less; my first
+  try faulted on exactly that);
+- QUPv3 wrapper 0 serial engine 1 (`0x884000`) already has its I2C firmware loaded (protocol 3), and its clocks come up with the same
+  recipe as the touch screen's (vote register `0x5200c`, bits 6, 7 and 11, clock source `0x17278` at 19.2 MHz);
+- **the amplifier answers at address 0x34 and its ID register (3) reads `0x0c74`: a TFA9874.** Registers 0 and 1 read `0x0001` and `0x0000`.
+  The answer is the same before and after pulsing the reset line, so the chip was already awake;
+- nothing was written to the amplifier.
+
+Next: (b) open the MI2S port over APR.
+
+This is the part most likely to take several test sessions, and the amplifier's start-up is where it is most
 likely to stall.
 
