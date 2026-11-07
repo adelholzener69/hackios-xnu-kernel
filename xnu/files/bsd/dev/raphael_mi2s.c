@@ -169,6 +169,91 @@ m_edges(const char *when, unsigned secs)
 	    e138, e139);
 }
 
+/*
+ * The speaker protection: the TFA9874 has no DSP of its own, its algorithm is the audio DSP's module TFADSP_RX
+ * (0x1000B911) on the quaternary MI2S RX port, and the NXP driver's messages for it go there as the parameter
+ * 0x1000B921 (set) and are answered through 0x1000B922 (get). In band, parameter header version 3 (module,
+ * instance, parameter, size), as Xiaomi's q6afe.c does when the DSP knows instance ids.
+ */
+#define M_OP_SET_PARAM_V3       0x000100fau
+#define M_OP_GET_PARAM_V3       0x000100fbu
+#define M_RSP_GET_PARAM_V3      0x00010108u
+#define M_MOD_TFADSP_RX         0x1000b911u
+#define M_PARAM_TFADSP_RX_CFG   0x1000b921u
+#define M_PARAM_TFADSP_RX_GET   0x1000b922u
+
+struct m_param3 {
+	uint32_t module;
+	uint16_t instance, reserved;
+	uint32_t param, size;
+} __attribute__((packed));
+
+static unsigned tfadsp_sent, tfadsp_refused, tfadsp_read;
+
+int
+raphael_tfadsp_write(const char *message, unsigned length)
+{
+	uint8_t packet[16 + sizeof(struct m_param3) + 4096];
+	struct m_param3 *p = (struct m_param3 *)(packet + 16);
+	unsigned padded = (length + 3u) & ~3u;
+	struct hakios_apr_answer a;
+
+	if (padded > 4096) {
+		say("mi2s: a TFADSP message of %u bytes is too long\n", length);
+		return 1;
+	}
+	bzero(packet, 16 + sizeof(*p) + padded);
+	*(uint16_t *)packet = M_PORT;
+	*(uint16_t *)(packet + 2) = (uint16_t)(sizeof(*p) + padded);
+	p->module = M_MOD_TFADSP_RX;
+	p->param = M_PARAM_TFADSP_RX_CFG;
+	p->size = padded;
+	memcpy(packet + 16 + sizeof(*p), message, length);
+	tfadsp_sent++;
+	if (!hakios_adsp_apr(M_AFE, M_PORT, 0, M_OP_SET_PARAM_V3, packet, 16 + (uint32_t)sizeof(*p) + padded, M_WAIT_MS, &a) ||
+	    a.opcode != M_RESULT || a.words[1] != 0) {
+		tfadsp_refused++;
+		say("mi2s: TFADSP message %u (%u bytes, %02x %02x %02x): %s %#x\n", tfadsp_sent, length, (uint8_t)message[0],
+		    (uint8_t)message[1], (uint8_t)message[2], a.opcode == M_RESULT ? "REFUSED, status" : "no answer, opcode", a.opcode == M_RESULT ? a.words[1] : a.opcode);
+		return 1;
+	}
+	return 0;
+}
+
+int
+raphael_tfadsp_read(uint8_t *result, unsigned length)
+{
+	uint8_t packet[16 + sizeof(struct m_param3)];
+	struct m_param3 *p = (struct m_param3 *)(packet + 16);
+	struct hakios_apr_answer a;
+
+	bzero(packet, sizeof(packet));
+	*(uint16_t *)packet = M_PORT;
+	*(uint16_t *)(packet + 2) = (uint16_t)sizeof(*p);
+	p->module = M_MOD_TFADSP_RX;
+	p->param = M_PARAM_TFADSP_RX_GET;
+	p->size = (length + 3u) & ~3u;
+	tfadsp_read++;
+	if (!hakios_adsp_apr(M_AFE, M_PORT, 0, M_OP_GET_PARAM_V3, packet, sizeof(packet), M_WAIT_MS, &a) || a.opcode != M_RSP_GET_PARAM_V3) {
+		say("mi2s: TFADSP read %u: %s %#x\n", tfadsp_read, a.opcode == M_RESULT ? "refused, status" : "no answer, opcode",
+		    a.opcode == M_RESULT ? a.words[1] : a.opcode);
+		return 1;
+	}
+	/* the answer: status, the parameter header (16 bytes), the data */
+	if (a.words[0] != 0) {
+		say("mi2s: TFADSP read %u: status %u\n", tfadsp_read, a.words[0]);
+		return 1;
+	}
+	memcpy(result, (const uint8_t *)a.words + 4 + sizeof(struct m_param3), length);
+	return 0;
+}
+
+void
+raphael_tfadsp_report(void)
+{
+	say("mi2s: TFADSP: %u messages sent, %u refused or unanswered, %u reads\n", tfadsp_sent, tfadsp_refused, tfadsp_read);
+}
+
 extern bool raphael_tfa_start(void (*say)(const char *));
 extern void raphael_tfa_stop(void (*say)(const char *));
 
@@ -221,6 +306,7 @@ raphael_mi2s_step(void)
 				delay_for_interval(hold * 1000, NSEC_PER_MSEC);
 				m_edges("port and amplifier running", hold);
 			}
+			raphael_tfadsp_report();
 			raphael_tfa_stop(say_line);
 		}
 		m_cmd("the port 0x1006, stopped", 0, M_OP_STOP, port, sizeof(port));

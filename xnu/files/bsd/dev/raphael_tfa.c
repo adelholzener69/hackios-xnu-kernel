@@ -101,13 +101,20 @@ bus_read(uint8_t reg, uint8_t *data, unsigned length)
 
 static unsigned dsp_messages;
 
+extern int raphael_tfadsp_write(const char *message, unsigned length);
+extern int raphael_tfadsp_read(uint8_t *result, unsigned length);
+
 static int
 dsp_write(const char *message, unsigned length)
 {
-	(void)message;
-	(void)length;
-	dsp_messages++;     /* (for the audio DSP's TFADSP module: not delivered yet) */
-	return 0;
+	dsp_messages++;
+	return raphael_tfadsp_write(message, length);
+}
+
+static int
+dsp_read(uint8_t *result, unsigned length)
+{
+	return raphael_tfadsp_read(result, length);
 }
 
 static const uint8_t *container;
@@ -121,7 +128,7 @@ static bool open_ok;
 bool
 raphael_tfa_start(void (*say)(const char *))
 {
-	struct tfa_bus b = { bus_write, bus_read, dsp_write, NULL };
+	struct tfa_bus b = { bus_write, bus_read, dsp_write, dsp_read };
 	struct tfa_device *tfa;
 	char line[200];
 	int err;
@@ -174,7 +181,7 @@ raphael_tfa_start(void (*say)(const char *))
 		tfa_reset(tfa);
 	}
 	err = tfa_dev_start(tfa, 0, 0, 16);
-	snprintf(line, sizeof(line), "tfa: tfa_dev_start(profile 0) returned %d; %u messages for the audio DSP were not delivered\n",
+	snprintf(line, sizeof(line), "tfa: tfa_dev_start(profile 0) returned %d; %u messages went to the audio DSP's TFADSP module\n",
 	    err, dsp_messages);
 	say(line);
 	return err == 0;
