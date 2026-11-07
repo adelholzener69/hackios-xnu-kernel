@@ -232,6 +232,7 @@ hakios_input_init(void)
 	hakios_virtio_input_init();
 	if (hakios_is_raphael()) {
 		raphael_touch_init();
+		raphael_amp_init();
 	} else {
 		hakios_goodix_init();
 	}
