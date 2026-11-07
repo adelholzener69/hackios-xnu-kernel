@@ -128,6 +128,10 @@ export XL_CMDLINE="gic_timer_irq=19 bootcpu=7 cpus=8 touchscreen=1 buttons=1 cpu
 You should see the iOS home screen after about a minute and a half (the GPU self-test triangle that older
 builds drew is switched off; to bring it back, uncomment the `gl_test` line in `devices/raphael/raphael.jobs`). Connect to Wi-Fi in
 Settings (give it a minute to list networks). For no Wi-Fi, drop `$WIFI_ARGS` and add `wifi=0`.
+
+**Sound (optional):** add `adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1` to `XL_CMDLINE` (the images must have been built
+with `ADSP=1` and your `fw-audio/`, see [RAPHAEL-K20PRO-SOUND.md](RAPHAEL-K20PRO-SOUND.md)). With it the first Wi-Fi/SpringBoard start is the same, and the
+loudspeaker plays whatever iOS plays.
 The session ends by itself after 10 minutes (`XL_SECS`); `./xl stop` ends it early.
 
 ## If something goes wrong

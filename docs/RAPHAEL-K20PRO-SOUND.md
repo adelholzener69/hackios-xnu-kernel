@@ -187,7 +187,7 @@ port (QUAT_MI2S_TX, 0x1007: I2S, 48 kHz, 16 bits, stereo, data line 1 = GPIO 140
 DSP's `TFADSP_TX` module is enabled on it (0x1000b920 = 1) and `TFADSP_RX` is set to *not bypassed* (0x1000b923 = 0), all with status 0; the
 15 start-up messages are delivered and the amplifier starts, the clock running throughout; at the end everything is switched off again.
 
-**Sub-step (d), passed on a Redmi K20 Pro, 2026-11-07: THE LOUDSPEAKER PLAYS (heard by the owner).** `adsp_step=12 tfa=1 tfa_tx=1 tone=8000 tone_gain=32
+**Sub-step (d), passed on a Redmi K20 Pro, 2026-11-07: THE LOUDSPEAKER PLAYS (heard by the owner).** (The bring-up test modes named in this section, `tone=`, `tone_gain=`, `tone_repeat=`, `tone_beeps=`, `ios_selftest=` and the sound test session file, were removed afterwards, once iOS's own sound worked; they are in the git history.) `adsp_step=12 tfa=1 tfa_tx=1 tone=8000 tone_gain=32
 tone_ramp_ms=1500`: an ADM device path and an ASM stream to port 0x1006 (the flow of `hakios.sound.c`, with the endpoint chosen per
 phone), a 1 kHz tone at 32/256 of -20 dBFS (about -38 dBFS) rising over 1.5 s. 409 periods written and given back, 0 errors, 0 underflows, the
 DSP took 48,134 frames a second; the amplifier's data pin carried the samples and the amplifier stayed engaged, with the DSP's speaker
@@ -200,8 +200,7 @@ about 50 ms later it dropped out (TDM error flagged, clocks lost). **Android's s
 had chosen made it flag an error and shut down. With 24 bits (AFE I2S config `bit_width` 24, bit clock 48,000 x 32 x 2, and the NXP driver told
 `pcm_format` 24) it stays up and plays. Also needed: the un-mute Android's driver does after each start.
 
-**iOS's sound plays through the speaker, smooth (a Redmi K20 Pro, 2026-11-07).** Boot (the full image, `RC_JOBS=devices/raphael/raphael-sound.jobs` for the
-test session) with `adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1`: the port, the feedback port and the amplifier stay up for
+**iOS's sound plays through the speaker, smooth (a Redmi K20 Pro, 2026-11-07).** Boot (the full image) with `adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1`: the port, the feedback port and the amplifier stay up for
 the whole run, and `/dev/hakios-audio` (iOS's audio server, through `HakiosAudio.driver`) is fed to the DSP by the same feeder the POCO uses, without that
 phone's guard (the DSP's TFADSP is the protection here). The tone iOS played through an audio queue, the system sounds and the owner's ringtones all
 came out of the loudspeaker.
@@ -223,15 +222,14 @@ amplifier's registers looked right and the DSP accepted every message. The cause
 DSP: while the amplifier was off the feeder stopped consuming, the ring stayed full of iOS's trailing silence (iOS keeps writing zeros for a while after
 a sound), and the next sound was turned away at the door, so the watcher, which looks for sound to wake the amplifier, never saw it. Now old silence in the ring is
 thrown away while the amplifier is off, and sound that does not fit still counts as sound. (The tools that found it: `ios_debug=1`, a status line twice a second
-with the ring, the gain, the peak sent and the amplifier's sense registers 0x16/0x17, which are non-zero only while it really drives the speaker; `tone_beeps=N` /
-`beeps_variant`, beeps with the amplifier cycled under a running stream; `ios_selftest=N`, the whole iOS path fed by a kernel thread. Two bugs on the way: the volume
+with the ring, the gain, the peak sent and the amplifier's sense registers 0x16/0x17, which are non-zero only while it really drives the speaker. (Test modes used then and since removed: beeps with the amplifier cycled under a running stream, and the whole iOS path fed by a kernel thread.) Two bugs on the way: the volume
 table held 65536 in a 16-bit field, which made the gain 0; and the status registers showed nothing wrong in the failing case.)
 
 On the ringer: Settings' Ringtone and Alert Volume slider changes the ringtone preview, and the volume buttons change it only if "Change with Buttons" is on, as on any iPhone.
 
-**Faster tests.** Everything up to here needs only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
-2.4 GB system image: boot with `fastboot boot`, skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel panics at the
-end for want of `launchd`, which does not matter. It saves about two minutes of each run.
+**Faster tests.** The audio-DSP steps (up to `adsp_step=12`) need only the kernel and the small boot image (it carries `fw/adsp.*` and `mono.cnt`), not the
+2.4 GB system image: skip `./xl ramdisk`, and `./xl run` with `XL_RAMDISK=userland/root.apfs`; the kernel then panics at the end for want of `launchd`,
+which does not matter. It saves about two minutes of each run.
 
 ## How to use it
 
@@ -244,9 +242,6 @@ e.g. `adb pull` in TWRP with the vendor partition mounted, or from the stock ROM
 adsp_step=12 adsp_keep=1 adsp_pause=500 tfa=1 tfa_tx=1 ios_audio=1
 ```
 
-Optional: `ios_gain=N` (out of 256, default 128) caps the loudest level; `ios_amp_idle=N` is the idle power-down in seconds (default 30, 0 = never); `tone=MS tone_gain=N tone_ramp_ms=MS tone_repeat=N` (with
-`adsp_step=12 tfa=1 tfa_tx=1`, no `ios_audio`) plays a quiet test tone from the kernel alone (no iOS, no 2.4 GB system image);
-`tfa_debug=1` dumps the amplifier's registers; `ios_debug=1` says what the feeder does twice a second.
+Optional: `ios_gain=N` (out of 256, default 128) caps the loudest level; `ios_amp_idle=N` is the idle power-down in seconds (default 30, 0 = never); `tfa_debug=1` dumps the amplifier's registers after each start; `ios_debug=1` says what the feeder does twice a second (ring, gain, peak, the amplifier's sense registers).
 
-Things worth knowing: the amplifier is protected by the audio DSP's algorithm, not by a limit of ours, but start quietly all the same (a first tone at
-`tone_gain=4`); the speaker is a real one. Kernel panics put the amplifier into power-down.
+Things worth knowing: the amplifier is protected by the audio DSP's algorithm, not by a limit of ours, but the speaker is a real one: try a quiet sound first. Kernel panics put the amplifier into power-down.
