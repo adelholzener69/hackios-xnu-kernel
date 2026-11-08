@@ -104,7 +104,7 @@ diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
 index 4b83160780c3..8997af1f0e1b 100644
 --- a/bsd/conf/Makefile.template
 +++ b/bsd/conf/Makefile.template
-@@ -588,5 +588,13 @@ do_build_all:: do_all
+@@ -588,5 +588,19 @@ do_build_all:: do_all
  
  %RULES
  
@@ -115,6 +115,12 @@ index 4b83160780c3..8997af1f0e1b 100644
 +$(foreach o,$(HFS_OBJS),$(eval $(o)_CFLAGS_ADD += -UXNU_KERNEL_PRIVATE -UBSD_KERNEL_PRIVATE -UMACH_KERNEL_PRIVATE \
 +	-include $(SRCROOT)/bsd/hfs/kext-config.h -I$(SRCROOT)/bsd/hfs -idirafter $(SDKROOT)/usr/include))
 +$(foreach o,$(HFS_OBJS),$(eval $(o)_CWARNFLAGS_ADD += -w))
++
++# raphael: the NXP TFA98xx code (bsd/dev/tfa98xx, Apache-2.0) is not written for this kernel's warnings
++tfa_init.o_CFLAGS_ADD += -Wno-error -w
++tfa_dsp.o_CFLAGS_ADD += -Wno-error -w
++tfa_container.o_CFLAGS_ADD += -Wno-error -w
++tfa_glue.o_CFLAGS_ADD += -Wno-error -w
 +
  include $(MakeInc_rule)
  include $(MakeInc_dir)
