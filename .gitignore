@@ -7,6 +7,7 @@
 !/.gitattributes
 !/VERSION
 !/README.md
+!/AGENTS.md
 !/CONTRIBUTING.md
 !/CHANGELOG.md
 !/ci/
@@ -121,6 +122,7 @@ __pycache__/
 !/devices/manifest.conf
 !/devices/README.md
 !/devices/qemu/
+!/devices/raphael/
 
 # Android platform-tools for xl on a Mac (tools/macos-bin/README.md): not part of the repository
 /tools/macos-bin/platform-tools

@@ -341,13 +341,14 @@ compose_logs(const char *klog, uint64_t klog_len)
 
 static int hc_list_is_uefis(void);
 static int hc_log_skips;                /* logs not written this run (said twice at most) */
+static int persist_logs;
 static void hc_print_state(const char *when);
 static void hc_take_back(const char *when);
 
 static void
 write_logs(const char *klog, uint64_t klog_len)
 {
-	efi_block_io *bio = find_log_partition();
+	efi_block_io *bio = persist_logs ? find_log_partition() : NULL;
 
 	compose_logs(klog, klog_len);
 	if (bio == NULL) {
@@ -586,6 +587,12 @@ static const struct platform platform_redwood = {
 	 * (XNU's machine_routines.c, ml_choose_slow_core_partners()).
 	 */
 	.small_cores = 0x0f,
+};
+
+static const struct platform platform_raphael = {
+	.name = "raphael", .io_base = 0x00400000, .io_size = 0x3FC00000,
+	.gic_dist = 0x17A00000, .gic_redist = 0x17A60000,
+	.cores = 8, .core_shift = 8, .small_cores = 0x0f,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -899,6 +906,7 @@ struct kernel_live {
 	uint64_t stop;                  /* ours to write: the host wants the run to end ("oem stop") */
 	uint64_t magic2;                /* "XNULIVE2": the kernel is new enough to have what follows */
 	uint64_t sound;                 /* (a virtual address too) the same for a recording of the sound */
+	uint64_t magic3, framebuffer;   /* current scanout PA, through a kernel virtual pointer */
 };
 
 /*
@@ -1874,14 +1882,14 @@ block_tables(void)
  * is already in bp->name (ufs_name), in ASCII.
  */
 static int
-block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const struct loader_block_part *bp)
+block_is_store(const efi_partition_info *info, const efi_block_io *bio, const struct loader_block_part *bp)
 {
 	static const efi_guid type = BLOCK_DARWIN_TYPE;
 	const uint8_t *u = (const uint8_t *)&info->unique_guid;
 	static const char name[] = "darwin";
 	const char *why = NULL;
 
-	for (unsigned i = 0; i < sizeof(name); i++) {
+	for (unsigned i = 0; i <= str_len(name); i++) {
 		if (bp->name[i] != name[i]) {
 			return 0;               /* another partition: nothing to say about it */
 		}
@@ -1899,7 +1907,7 @@ block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const s
 		why = "UEFI gives it out read only";
 	}
 	if (why != NULL) {
-		print("ufs: darwin: no write will be served: %s\n", why);
+		print("ufs: %s: no write will be served: %s\n", name, why);
 		return 0;
 	}
 	print("ufs: darwin (LBA %d..%d of unit 0, unique GUID %x...%x): its blocks from %d on may be written this run\n",
@@ -1980,7 +1988,7 @@ block_start(void)
 				}
 			}
 		}
-		if (block_write_requested && block_is_darwin(info, bio, bp)) {
+		if (block_write_requested && block_is_store(info, bio, bp)) {
 			block_write_part = (int)block_shared.parts;
 		}
 		block_bios[block_shared.parts++] = bio;
@@ -2235,7 +2243,7 @@ charger_start(void)
 	static const efi_guid qcom_charger_guid = QCOM_CHARGER_GUID;
 	efi_status ex_status, qcom_status, init_status = 0;
 
-	if (charger_enabled || PLAT != &platform_redwood) {
+	if (charger_enabled || (PLAT != &platform_redwood && PLAT != &platform_raphael)) {
 		return;
 	}
 	ex_status = BS->locate_protocol(&charger_ex_guid, NULL, (void **)&CHARGER_EX);
@@ -3235,6 +3243,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop_u32(&w, "#size-cells", 2);
 
 	dt_begin(&w, "chosen");
+	dt_prop_str(&w, "hackios,platform", plat->name);
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", phys_base);
 	dt_prop_u64(&w, "dram-size", win_size);
@@ -3536,7 +3545,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		    (uint64_t)block_shared.kernel_native.switched_in, (uint64_t)block_shared.kernel_native.switched_out);
 	}
 	if (block_write_requested) {
-		print("ufs: %d writes into darwin, %d bytes, read back the same; %d refused\n", block_writes,
+		print("ufs: %d writes into the data partition, %d bytes, read back the same; %d refused\n", block_writes,
 		    block_write_bytes, block_writes_refused);
 	}
 	/* ... and its other cores should all be off again: the next kernel cannot start one that is not */
@@ -3798,6 +3807,59 @@ starts_with(const char *s, const char *prefix)
 	return 1;
 }
 
+/* Idle-only block reads for firmware extraction and deployment readback; never writes storage. */
+static void
+fb_read_part(char *args)
+{
+	char *fields[3] = { args, NULL, NULL };
+	unsigned n = 1;
+	staged_data = NULL;
+	staged_len = 0;
+	for (char *c = args; *c; c++) {
+		if (*c == ' ') {
+			if (n == 3) { fb_reply("FAIL", "expected name lba count (hex blocks)"); return; }
+			*c = 0;
+			fields[n++] = c + 1;
+		}
+	}
+	if (n != 3 || !fields[0][0] || str_len(fields[0]) >= 36) {
+		fb_reply("FAIL", "expected name lba count (hex blocks)"); return;
+	}
+	for (unsigned i = 1; i < 3; i++) {
+		if (!fields[i][0] || str_len(fields[i]) > 16) {
+			fb_reply("FAIL", "invalid block range"); return;
+		}
+		for (const char *c = fields[i]; *c; c++) {
+			if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f'))) {
+				fb_reply("FAIL", "invalid block range"); return;
+			}
+		}
+	}
+	uint64_t lba = parse_number(fields[1], 16), count = parse_number(fields[2], 16);
+	if (block_shared.magic != BLOCK_MAGIC) block_start();
+	uint32_t found = BLOCK_MAX_PARTS;
+	for (uint32_t i = 0; i < block_shared.parts; i++) {
+		if (str_eq(fields[0], block_shared.part[i].name)) {
+			if (found != BLOCK_MAX_PARTS) { fb_reply("FAIL", "ambiguous partition name"); return; }
+			found = i;
+		}
+	}
+	if (found == BLOCK_MAX_PARTS) { fb_reply("FAIL", "no such partition"); return; }
+	const struct loader_block_part *p = &block_shared.part[found];
+	if (!hc_list_is_uefis() || p->block_size == 0 || count == 0 ||
+	    count > BLOCK_BUFFER_SIZE / p->block_size || lba >= p->blocks || count > p->blocks - lba) {
+		fb_reply("FAIL", "read outside partition/buffer or controller busy"); return;
+	}
+	uint64_t bytes = count * p->block_size;
+	efi_block_io *bio = block_bios[found];
+	if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, lba, bytes, block_buffer))) {
+		fb_reply("FAIL", "ReadBlocks failed"); return;
+	}
+	staged_data = (const char *)block_buffer;
+	staged_len = bytes;
+	fb_reply("OKAY", "");
+}
+
 /*
  * One command from the host. While a kernel runs on another core (running_live) only what does
  * not disturb it: questions, the screen, the log so far, and "oem stop".
@@ -3811,7 +3873,8 @@ fb_command(char *cmd)
 	{
 		if (busy && (starts_with(cmd, "oem ramdisk") || starts_with(cmd, "download:") || starts_with(cmd, "oem run") ||
 		    starts_with(cmd, "oem selftest") || starts_with(cmd, "oem hang") || starts_with(cmd, "oem recording") ||
-		    starts_with(cmd, "oem sound") || starts_with(cmd, "oem clearscreen") || starts_with(cmd, "oem memmap"))) {
+		    starts_with(cmd, "oem sound") || starts_with(cmd, "oem clearscreen") || starts_with(cmd, "oem memmap") ||
+		    starts_with(cmd, "oem read-part"))) {
 			fb_reply("FAIL", "a kernel is running (oem stop ends it)");
 		} else if (starts_with(cmd, "oem stop")) {
 			/* the kernel looks at this once a second and comes back as it does when its time is up */
@@ -3931,13 +3994,28 @@ fb_command(char *cmd)
 				sent += chunk;
 			}
 			fb_reply("OKAY", "");
+		} else if (starts_with(cmd, "oem read-part ")) {
+			fb_read_part(cmd + 14);
 		} else if (starts_with(cmd, "oem screenshot")) {
 			/* stage the raw framebuffer; "getvar screen" gives its geometry */
 			if (SCREEN.base == 0) {
 				fb_reply("FAIL", "no display");
 				return;
 			}
-			staged_data = (const char *)(uintptr_t)SCREEN.base;
+			uint64_t base = SCREEN.base;
+			if (busy && running_live != NULL && running_live->magic3 == 0x334556494c554e58ULL &&
+			    running_live->framebuffer != 0) {
+				uint64_t at = running_live->framebuffer + running_slide;
+				flush_dcache(at, at + 8);
+				uint64_t front = *(const volatile uint64_t *)(uintptr_t)at;
+				/* Only the raphael display reservation is used for page flipping. */
+				uint64_t bytes = (uint64_t)SCREEN.stride * SCREEN.height;
+				if (PLAT == &platform_raphael && bytes <= 0x02400000 && front >= 0x9c000000 &&
+				    front <= 0x9e400000 - bytes) {
+					base = front;
+				}
+			}
+			staged_data = (const char *)(uintptr_t)base;
 			staged_len = (uint64_t)SCREEN.stride * SCREEN.height;
 			fb_reply("OKAY", "");
 		} else if (starts_with(cmd, "oem recording")) {
@@ -3972,9 +4050,9 @@ fb_command(char *cmd)
 			int have_cp = selftest || (*arg >= '0' && *arg <= '9');
 			uint64_t cp = selftest ? CHECKPOINT_SELFTEST : parse_number(arg, 10);
 
+			log_len = 0;
 			set_result("running", cp, 0);
 			fb_reply("OKAY", "");
-			log_len = 0;
 			print("== XNULOADER run (usb) ==\n");
 			if (!run_kernel(have_cp, cp)) {
 				set_result("not-started", 0, 0);
@@ -4343,16 +4421,29 @@ efi_main(efi_handle image, efi_system_table *st)
 		SCREEN.width = GOP->mode->info->width;
 		SCREEN.height = GOP->mode->info->height;
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
-		if (SCREEN.base == 0xE1000000ULL) {
-			PLAT = &platform_redwood;
+		if (SCREEN.base == 0xE1000000ULL || SCREEN.base == 0x9c000000ULL) {
+			PLAT = SCREEN.base == 0x9c000000 ? &platform_raphael : &platform_redwood;
 		} else {
 			ramfb_phone_screen();
 		}
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+	persist_logs = PLAT == &platform_redwood;
 
 	install_exception_hook();
+	if (PLAT == &platform_raphael) {
+		/* Retain ABL's command-mode pipeline and refresh it once per tear-check frame. */
+		volatile uint32_t *pp = (volatile uint32_t *)0x0ae71000ULL;
+		volatile uint32_t *ctl = (volatile uint32_t *)0x0ae02000ULL;
+		if (pp[0] & 1u) {
+			pp[0x30 / 4] = (1u << 31) | 1u;
+			__asm__ volatile ("dsb sy" ::: "memory");
+			ctl[0x1c / 4] = 1;
+			__asm__ volatile ("dsb sy" ::: "memory");
+			print("display: raphael command-mode autorefresh enabled\n");
+		}
+	}
 	wdt_arm();
 
 	int have_payload = parse_payload(&pi, 0);

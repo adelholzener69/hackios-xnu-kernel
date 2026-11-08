@@ -464,7 +464,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	# fairplayd among them).
 	cp com.hakios.demo.plist com.hakios.wifi.plist root/LaunchDaemons/
 	VOLUME=""
-	[ -n "$FLASHBOOT" ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
+	[ -n "$FLASHBOOT" ] && [ "$FLASHBOOT" != prepared ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
 	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
@@ -518,6 +518,7 @@ done
 if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
+	[ -f ../fw-audio/mono.cnt ] && install -m 0644 ../fw-audio/mono.cnt root/fw/    # the speaker amplifier's container (raphael)
 fi
 # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
 # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
@@ -586,12 +587,22 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 	rm -rf flashboot flashboot.os
 	mkdir -p flashboot/sbin flashboot/redwood flashboot/dev flashboot/flash flashboot/Cryptexes/OS flashboot/Cryptexes/App
 	cp obj/stage0 flashboot/sbin/launchd
+	# These device-private inputs stay in the resident RAM image; never in shared images.
+	if [ -n "${MPSS_FW:-}" ]; then
+		[ -z "$SHARE" ] || { echo "MPSS_FW is device-private; SHARE is refused" >&2; exit 1; }
+		for f in modem.mdt wlanmdsp.mbn nv-modemst1 nv-modemst2 nv-fsg nv-fsc firmware-5.bin; do
+			[ -f "$MPSS_FW/$f" ] || { echo "Missing MPSS_FW/$f" >&2; exit 1; }
+		done
+		mkdir -p flashboot/fw
+		cp -a "$MPSS_FW"/. flashboot/fw/
+		chmod 0600 flashboot/fw/nv-*
+	fi
 	# the OS cryptex, and the shared cache in it, only where this image will carry it:
 	# with CRYPTEXES=flash the cryptexes are read from the phone's flash and this tree is
 	# built and thrown away unused. The guard ends with the cache: everything after it goes
 	# into the boot volume, which every recipe carries, flash cryptexes included
-	if [ "$CRYPTEXES" != flash ]; then
-		if [ -d $DARWIN/cryptex ]; then linkcopy $DARWIN/cryptex flashboot.os; else mkdir -p flashboot.os; fi
+	if [ "$CRYPTEXES" != flash ] && [ "$FLASHBOOT" != prepared ]; then
+		if [ -d $DARWIN/cryptex ]; then cp -al $DARWIN/cryptex flashboot.os; else mkdir -p flashboot.os; fi
 		D=flashboot.os/System/Library/Caches/com.apple.dyld
 		mkdir -p $D
 		for f in $CACHE/dyld_shared_cache_arm64*; do
@@ -629,7 +640,7 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 	# the third container: Apple's App cryptex as it is (10 MB; unpack.sh), for the boot volume's Cryptexes/App
 	APP=""
 	[ -f $DARWIN/cryptex-app.dmg ] && APP=$DARWIN/cryptex-app.dmg
-	if [ "$CRYPTEXES" = flash ]; then
+	if [ "$CRYPTEXES" = flash ] || [ "$FLASHBOOT" = prepared ]; then
 		mv flashboot.boot.apfs flashboot.apfs
 	elif [ -n "$CRYPTEX_IMAGE" ]; then
 		cat flashboot.boot.apfs "$CRYPTEX_IMAGE" $APP > flashboot.apfs
@@ -680,6 +691,7 @@ if [ -f $DARWIN/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	if [ -f ../fw-audio/adsp.mdt ]; then
 		mkdir -p sysroot/fw
 		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] sysroot/fw/
+		[ -f ../fw-audio/mono.cnt ] && cp ../fw-audio/mono.cnt sysroot/fw/    # the speaker amplifier's container (raphael)
 	fi
 	# MPSS firmware is much too large for the small boot image. Keep it in the system APFS,
 	# only when explicitly requested, after checking every loadable segment against this DTB.

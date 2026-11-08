@@ -13,6 +13,19 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
+
+int
+hakios_is_raphael(void)
+{
+	DTEntry chosen;
+	const void *name;
+	unsigned size;
+
+	return SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
+	       SecureDTGetProperty(chosen, "hackios,platform", &name, &size) == kSuccess &&
+	       size == sizeof("raphael") && memcmp(name, "raphael", sizeof("raphael")) == 0;
+}
 
 #define TOUCH_QUEUE     512             /* records; a power of two */
 
@@ -164,6 +177,7 @@ touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_dri
 {
 	struct hakios_touch *t;
 
+	hakios_cpufreq_boost();
 	lck_mtx_lock(&touch_lock);
 	if (touch_tail - touch_head == TOUCH_QUEUE) {
 		touch_head++;                   /* nobody reads: drop the oldest */
@@ -283,7 +297,12 @@ hakios_input_init(void)
 	exit_call = thread_call_allocate(exit_hold_elapsed, NULL);
 	hakios_cpufreq_init();
 	hakios_virtio_input_init();
-	hakios_goodix_init();
+	if (hakios_is_raphael()) {
+		raphael_touch_init();
+		raphael_amp_init();
+	} else {
+		hakios_goodix_init();
+	}
 	hakios_buttons_init();
 	hakios_battery_init();
 	hakios_ufs_init();

@@ -79,6 +79,7 @@
 #include <pexpert/pexpert.h>
 #include <sys/systm.h>
 #include <sys/hakios.audio.h>
+#include <sys/hakios.input.h>
 #include <vm/vm_kern.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -525,7 +526,7 @@ static struct block apps_smmu_context = { "apps smmu, the audio context", 0, 0x1
 #define PTE_ADDRESS             0x0000fffffffff000ull
 #define AUDIO_PTE               (3ull | 1ull << 6 | 2ull << 8 | 1ull << 10 | 1ull << 11)       /* as hakios.wifi.c's */
 
-#define AUDIO_STREAM            0x1801
+#define AUDIO_STREAM            (hakios_is_raphael() ? 0x1b21u : 0x1801u)       /* qcom,msm-audio-ion's iommus entry: redwood 0x1801, raphael 0x1b21 */
 #define AUDIO_ADDRESSES         0x10000000ull   /* dt: qcom,iommu-dma-addr-pool of qcom,msm-audio-ion */
 #define AUDIO_STREAM_BITS       (1ull << 32)    /* the stream's low bits (0x1801 & 0xf), where the DSP takes them from */
 
@@ -793,6 +794,7 @@ hakios_audio_dsp_memory_put(void)
 #define ADM_CMD_DEVICE_CLOSE_V5                 0x00010327u
 #define ADM_CMD_MATRIX_MAP_ROUTINGS_V5          0x00010325u
 #define ADM_PATH_PLAYBACK                       1
+#define ADM_ENDPOINT                            (hakios_is_raphael() ? 0x1006u : (uint32_t)PORT)        /* raphael: QUAT_MI2S_RX */
 #define ADM_MATRIX_AUDIO_RX                     0
 #define ADM_TOPOLOGY_NONE                       0x00010312u
 #define ADM_BITS                                24
@@ -866,7 +868,7 @@ stream_on(void)
 		uint16_t channels, bits;
 		uint32_t rate;
 		uint8_t map[8];
-	} __attribute__((packed)) open = { 0, ADM_PATH_PLAYBACK, PORT, 0xffff, ADM_TOPOLOGY_NONE, 2, ADM_BITS, RATE,
+	} __attribute__((packed)) open = { 0, ADM_PATH_PLAYBACK, ADM_ENDPOINT, 0xffff, ADM_TOPOLOGY_NONE, 2, ADM_BITS, RATE,
 		                           { PCM_CHANNEL_FL, PCM_CHANNEL_FR } };
 	struct {
 		uint32_t matrix, sessions;
@@ -896,7 +898,7 @@ stream_on(void)
 	mapped = true;
 	map_handle = answer.words[0];
 	say("sound: our %u KB at %#llx are the DSP's handle %#x\n", BUFFER_BYTES / 1024, buffer_address, map_handle);
-	if (!command("a device path to the port: playback, no processing, 2 channels of 24 bits at 48 kHz", APR_SVC_ADM, PORT,
+	if (!command("a device path to the port: playback, no processing, 2 channels of 24 bits at 48 kHz", APR_SVC_ADM, ADM_ENDPOINT,
 	    ADM_CMD_DEVICE_OPEN_V5, &open, sizeof(open), ADM_CMDRSP_DEVICE_OPEN_V5, &answer)) {
 		return false;
 	}
@@ -955,8 +957,10 @@ period_fill(unsigned period, bool silent)
 {
 	int16_t *samples = (int16_t *)(buffer + 4096 * period);
 
+
 	for (unsigned frame = 0; frame < PERIOD_FRAMES; frame++) {
 		int16_t sample = silent ? 0 : tone[tone_at++ % 48];
+
 
 		samples[2 * frame] = sample;
 		samples[2 * frame + 1] = sample;
@@ -1062,6 +1066,8 @@ play(uint32_t ms, bool amplifiers)
 	return ok;
 }
 
+extern bool raphael_amp_power(bool on);
+
 /* ---- sound=4: what Darwin plays ------------------------------------------------------------------------------ */
 
 /*
@@ -1078,6 +1084,7 @@ play(uint32_t ms, bool amplifiers)
 
 static int16_t ring[RING_FRAMES * 2];
 static volatile uint32_t ring_head, ring_tail;  /* frames: written by the sink, taken by the feeder */
+static volatile uint64_t last_write_us;         /* when the latest write of any kind came (raphael's jitter buffer) */
 static volatile uint64_t last_sound_us;         /* when the latest write that was not silence came */
 static volatile bool feeder_runs, watcher_runs;
 static uint64_t fed_frames, silent_frames, darwin_frames;
@@ -1101,9 +1108,18 @@ darwin_sink(const int16_t *frames, uint32_t count)
 			darwin_peak = l > r ? l : r;
 		}
 	}
+	/* what did not fit is looked at all the same: sound that is turned away still has to wake the amplifier (raphael) */
+	for (uint32_t i = taken; !sound && i < count; i++) {
+		int16_t left = frames[2 * i], right = frames[2 * i + 1];
+
+		sound = (left < 0 ? -(int32_t)left : left) > SILENCE || (right < 0 ? -(int32_t)right : right) > SILENCE;
+	}
 	OSMemoryBarrier();
 	ring_head = head + taken;
 	darwin_frames += taken;
+	if (taken != 0) {
+		last_write_us = now_us();
+	}
 	if (sound) {
 		last_sound_us = now_us();
 	}
@@ -1111,6 +1127,27 @@ darwin_sink(const int16_t *frames, uint32_t count)
 }
 
 static uint32_t guard_periods;                  /* periods through the guard */
+#define JITTER_FRAMES           2400            /* 50 ms */
+static bool jitter_primed;
+static volatile uint32_t fed_peak;              /* the largest sample sent to the DSP since the watcher last said (boot-arg ios_debug=1) */
+static uint32_t jitter_primes, jitter_dry, jitter_short;
+static uint32_t ios_gain = 128;                 /* raphael: the loudest, out of 256 (boot-arg ios_gain); iOS's volume is under it */
+static volatile uint32_t ios_gain_now = 128 * 256;      /* the gain in force, out of 65536: ios_gain and iOS's volume (the watcher keeps it) */
+static volatile bool ios_amp_ready;                     /* the amplifier is up: the feeder plays what iOS wrote */
+
+/* 10^(-r/160) of 65536, for r = 0..47 eighths of a dB: 6 dB (48 eighths) is half */
+static const uint32_t db_eighths[48] = { 65536, 64600, 63677, 62767, 61870, 60986, 60115, 59256, 58409, 57574, 56752, 55941, 55142, 54354, 53577, 52812, 52057, 51313, 50580, 49857, 49145, 48443, 47751, 47068, 46396, 45733, 45080, 44435, 43801, 43175, 42558, 41950, 41350, 40760, 40177, 39603, 39037, 38480, 37930, 37388, 36854, 36327, 35808, 35296, 34792, 34295, 33805, 33322 };
+
+static uint32_t
+volume_gain(uint32_t gain256, uint32_t below_eighths)
+{
+	uint32_t halves = below_eighths / 48, r = below_eighths % 48, g = gain256 * 256;
+
+	if (halves >= 16) {
+		return 0;
+	}
+	return (uint32_t)(((uint64_t)g * db_eighths[r] >> 16) >> halves);
+}
 static volatile bool guard_on;                  /* the amplifiers are on: what the guard lets through is heard */
 
 /* tenths of a dB as text: "-5.7" */
@@ -1149,6 +1186,45 @@ period_fill_darwin(unsigned period)
 	int16_t *samples = (int16_t *)(buffer + 4096 * period);
 	uint32_t tail = ring_tail, available = ring_head - tail, n = available < PERIOD_FRAMES ? available : PERIOD_FRAMES;
 
+	if (hakios_is_raphael()) {
+		/*
+		 * A jitter buffer: iOS writes at the pace the DSP plays, so the ring would sit nearly empty and a period would
+		 * often be only partly filled (silence in its tail: a hitch). Play only once JITTER_FRAMES are in the ring; if it
+		 * runs dry, wait for that many again; and once iOS has stopped writing (50 ms), let what is left out.
+		 */
+		bool writer_idle = now_us() - last_write_us > 50000;
+
+		if (!ios_amp_ready) {
+			/*
+			 * The amplifier is off (started when sound comes): sound iOS has written waits in the ring until it is up, but what is
+			 * old and silent is thrown away: a ring left full of it would turn the next sound away at the door.
+			 */
+			if (now_us() - last_sound_us > 300000) {
+				tail = ring_head;
+			}
+			available = 0;
+			n = 0;
+			jitter_primed = false;
+		}
+
+		if (!jitter_primed && (available >= JITTER_FRAMES || (writer_idle && available != 0))) {
+			jitter_primed = true;
+			jitter_primes++;
+		}
+		if (jitter_primed && available < PERIOD_FRAMES && !writer_idle) {
+			jitter_primed = false;      /* it ran dry while iOS is still writing */
+			jitter_dry++;
+			n = 0;
+		} else if (!jitter_primed) {
+			n = 0;
+		}
+		if (jitter_primed && n != 0 && n < PERIOD_FRAMES) {
+			jitter_short++;             /* (the tail of what iOS wrote) */
+		}
+		if (n == 0 && available == 0) {
+			jitter_primed = false;
+		}
+	}
 	OSMemoryBarrier();
 	for (uint32_t i = 0; i < n; i++) {
 		samples[2 * i] = ring[2 * ((tail + i) % RING_FRAMES)];
@@ -1159,8 +1235,26 @@ period_fill_darwin(unsigned period)
 	ring_tail = tail + n;
 	fed_frames += n;
 	silent_frames += PERIOD_FRAMES - n;
-	/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
-	hakios_guard_process(samples, PERIOD_FRAMES);
+	if (hakios_is_raphael()) {
+		/* the speaker protection is the DSP's (TFADSP); a digital cap of ours on top (boot-arg ios_gain, out of 256) */
+		uint32_t g = ios_gain_now;
+
+		if (g < 65536) {
+			for (uint32_t i = 0; i < 2 * n; i++) {
+				samples[i] = (int16_t)((int64_t)samples[i] * (int64_t)g / 65536);
+			}
+		}
+		for (uint32_t i = 0; i < 2 * n; i++) {
+			uint32_t a = samples[i] < 0 ? (uint32_t)-samples[i] : (uint32_t)samples[i];
+
+			if (a > fed_peak) {
+				fed_peak = a;
+			}
+		}
+	} else {
+		/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
+		hakios_guard_process(samples, PERIOD_FRAMES);
+	}
 	if (n != 0 && hakios_audio_recording_fed()) {
 		hakios_audio_record_fed(samples, n);
 	}
@@ -1210,12 +1304,139 @@ feeder_thread(__unused void *parameter, __unused wait_result_t result)
 		}
 		sleep_ms(2);
 	}
+	if (hakios_is_raphael()) {
+		say("sound: the jitter buffer (50 ms): started %u times, ran dry %u times while iOS was still writing, %u periods were a tail\n",
+		    jitter_primes, jitter_dry, jitter_short);
+	}
 	say("sound: the feeder stops: %u periods written (%u could not be sent), %u given back (%u with an error), %u underflows; "
 	    "from Darwin %llu frames came, %llu went to the DSP, %llu of silence filled in\n", sent, failed, written_done, write_errors,
 	    underflows, darwin_frames, fed_frames, silent_frames);
 	feeder_runs = false;
 	thread_terminate(current_thread());
 }
+
+/*
+ * raphael: what iOS plays, through the port and the amplifier that raphael_mi2s.c has started (boot-arg ios_audio=1):
+ * the same stream and the same feeder as level 4 for the POCO, without that phone's guard and amplifiers (the
+ * DSP's TFADSP is the protection here). Runs until the run ends (hakios_sound_dsp_down()).
+ */
+extern void raphael_mi2s_close(void);
+extern bool raphael_amp_power(bool on);
+extern void raphael_tfa_sense(uint16_t out[5]);
+static bool running, taken_down;
+
+/*
+ * raphael: iOS's volume and the amplifier's power. The volume is a gain on the samples (the plug-in says how far under the
+ * loudest iOS wants it, the loudest is ios_gain); the amplifier is started when sound comes (what iOS wrote waits in the ring
+ * until it is up, so nothing is lost) and powered down after ios_amp_idle seconds of silence.
+ * ios_amp_idle=N sets the seconds (default 30; 0: the amplifier stays on). Sound that comes while it is off waits in the ring (about
+ * half a second of delay for the first sound); old silence in the ring is thrown away so that the next sound is not turned away at a full
+ * ring (that, not the amplifier, was what once kept it silent after the first power-down).
+ */
+static void
+raphael_watch_thread(__unused void *parameter, __unused wait_result_t result)
+{
+	uint32_t generation = 0, idle_s = 30, starts = 0, stops = 0, ios_debug = 0;
+	uint64_t last_debug_us = 0;
+	uint64_t wanted_at = now_us();
+	bool muted = false;
+
+	PE_parse_boot_argn("ios_amp_idle", &idle_s, sizeof(idle_s));
+	PE_parse_boot_argn("ios_debug", &ios_debug, sizeof(ios_debug));
+	while (!stopping) {
+		uint32_t below, generation_now;
+		bool muted_now, want;
+		uint64_t now = now_us(), sounded = last_sound_us;
+
+		if (hakios_audio_volume(&below, &muted_now, &generation_now) && generation_now != generation) {
+			generation = generation_now;
+			muted = muted_now;
+			ios_gain_now = muted ? 0 : volume_gain(ios_gain, below);
+			say("sound: iOS sets the volume: %s%u.%03u dB under the loudest: gain %u/65536\n", muted ? "muted, " : "", below / 8,
+			    below % 8 * 125, ios_gain_now);
+		}
+		if (ios_debug && now - last_debug_us >= 500000 && (sounded != 0 && now - sounded < 3000000)) {
+			last_debug_us = now;
+			uint16_t sense[5] = { 0, 0, 0, 0, 0 };
+
+			if (ios_amp_ready) {
+				raphael_tfa_sense(sense);
+			}
+			say("sound: debug: ring %u frames, amp ready %d, primed %d, gain %u, peak sent %u, %llu frames from iOS; amp 10=%04x 11=%04x 14=%04x sense 16=%04x 17=%04x\n",
+			    ring_head - ring_tail, ios_amp_ready, jitter_primed, ios_gain_now, fed_peak, darwin_frames, sense[0], sense[1], sense[2],
+			    sense[3], sense[4]);
+			fed_peak = 0;
+		}
+		want = !muted && sounded != 0 && now - sounded < 100000;
+		if (want) {
+			wanted_at = now;
+			if (!ios_amp_ready) {
+				say_when("iOS plays: the amplifier is started");
+				if (raphael_amp_power(true)) {
+					ios_amp_ready = true;
+					starts++;
+				} else {
+					say("sound: THE AMPLIFIER DID NOT START\n");
+					sleep_ms(1000);
+				}
+			}
+		} else if (ios_amp_ready && idle_s != 0 && now - wanted_at > idle_s * 1000000ull) {
+			ios_amp_ready = false;
+			raphael_amp_power(false);
+			stops++;
+			say_when(muted ? "iOS's volume is 0: the amplifier is powered down" : "silence: the amplifier is powered down");
+		}
+		sleep_ms(5);
+	}
+	say("sound: the watcher stops; the amplifier was started %u times and powered down %u times\n", starts, stops);
+	watcher_runs = false;
+	thread_terminate(current_thread());
+}
+
+bool
+hakios_raphael_ios_start(void)
+{
+	thread_t feeder;
+	bool ok;
+
+	PE_parse_boot_argn("ios_gain", &ios_gain, sizeof(ios_gain));
+	lck_mtx_lock(&sound_lock);
+	lck_mtx_lock(&hakios_smmu_lock);
+	ok = shared_get(0);
+	lck_mtx_unlock(&hakios_smmu_lock);
+	if (ok) {
+		hakios_adsp_apr_events(events);
+		ok = stream_on();
+	}
+	if (!ok) {
+		stream_off();
+		hakios_adsp_apr_events(NULL);
+		lck_mtx_unlock(&sound_lock);
+		return false;
+	}
+	level = 4;
+	running = true;
+	stopping = false;
+	feeder_runs = true;
+	ios_amp_ready = true;
+	ios_gain_now = ios_gain * 256;
+	if (kernel_thread_start(raphael_watch_thread, NULL, &feeder) == KERN_SUCCESS) {
+		thread_deallocate(feeder);
+		watcher_runs = true;
+	}
+	if (kernel_thread_start(feeder_thread, NULL, &feeder) != KERN_SUCCESS) {
+		feeder_runs = false;
+		say("sound: no thread for the feeder\n");
+		lck_mtx_unlock(&sound_lock);
+		return false;
+	}
+	thread_deallocate(feeder);
+	hakios_audio_set_sink("the speaker (the audio DSP, raphael)", ios_sink);
+	say("sound: WHAT IOS PLAYS GOES TO THE SPEAKER from here on (cut to %u/256), until the run ends\n", ios_gain);
+	lck_mtx_unlock(&sound_lock);
+	return true;
+}
+
 
 /* The amplifiers' level as the guard is to reckon with it (sound_guard_as: louder than it is, for a test). */
 static void
@@ -1351,7 +1572,6 @@ watch(void)
 
 /* ---- the whole ---------------------------------------------------------------------------------------- */
 
-static bool running, taken_down;
 
 static void
 take_down(void)
@@ -1364,6 +1584,18 @@ take_down(void)
 		sleep_ms(1);
 	}
 	lck_mtx_lock(&sound_lock);
+	if (running && !taken_down && hakios_is_raphael()) {
+		taken_down = true;
+		stream_off();
+		lck_mtx_lock(&hakios_smmu_lock);
+		shared_put(0);
+		lck_mtx_unlock(&hakios_smmu_lock);
+		hakios_adsp_apr_events(NULL);
+		lck_mtx_unlock(&sound_lock);
+		raphael_mi2s_close();
+		say("sound: everything of the sound's is stopped and put back\n");
+		return;
+	}
 	if (running && !taken_down) {
 		taken_down = true;
 		hakios_speaker_stop();
@@ -1534,8 +1766,14 @@ hakios_sound_dsp_down(void)
 	}
 }
 
+extern void raphael_tfa_quiesce(void);
+
 void
 hakios_sound_quiesce(void)
 {
+	if (hakios_is_raphael()) {
+		raphael_tfa_quiesce();         /* the amplifier into power-down */
+		return;
+	}
 	hakios_speaker_quiesce();
 }

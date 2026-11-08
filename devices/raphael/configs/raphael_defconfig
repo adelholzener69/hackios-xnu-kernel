@@ -1,0 +1,4 @@
+# HakiOS defconfig for the Redmi K20 Pro / Mi 9T Pro (raphael): the common kernel, the sm8150 family's facts, and this device's own.
+#include common_defconfig
+#include sm8150.config
+#include raphael.config

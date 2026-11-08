@@ -565,6 +565,139 @@ wait_for_als_arrival(__unused id self, __unused SEL selector)
 	}
 }
 
+/*
+ * Boot-arg bright_probe=1: list what backboardd has for brightness (class and method names, their
+ * type encodings and addresses relative to the cache), so that the method the brightness slider
+ * ends in can be found without guessing. Only logs.
+ */
+static void
+brightness_probe_dump(const char *when)
+{
+	unsigned count = objc_getClassList(NULL, 0);
+	Class *classes = count ? malloc(count * sizeof(Class)) : NULL;
+
+	if (classes == NULL) {
+		return;
+	}
+	count = objc_getClassList(classes, count);
+	say("hakios: bright: probe %s, %u classes\n", when, count);
+	for (unsigned i = 0; i < count; i++) {
+		const char *name = class_getName(classes[i]);
+		int whole = strcasestr(name, "Brightness") != NULL || strstr(name, "BLControl") != NULL ||
+		    strcasestr(name, "Backlight") != NULL;
+
+		if (!whole && strncmp(name, "BKDisplay", 9) != 0 && strncmp(name, "BKSDisplay", 10) != 0) {
+			continue;
+		}
+		say("hakios: bright: class %s\n", name);
+		for (int meta = 0; meta < 2; meta++) {
+			Class cls = meta ? object_getClass((id)classes[i]) : classes[i];
+			unsigned methods = 0;
+			Method *list = class_copyMethodList(cls, &methods);
+
+			for (unsigned j = 0; j < methods; j++) {
+				const char *selector = sel_getName(method_getName(list[j]));
+
+				if (!whole && strcasestr(selector, "rightness") == NULL && strcasestr(selector, "backlight") == NULL) {
+					continue;
+				}
+				say("hakios: bright:   %c[%s %s] %s at %#lx\n", meta ? '+' : '-', name, selector,
+				    method_getTypeEncoding(list[j]) ? method_getTypeEncoding(list[j]) : "?",
+				    (unsigned long)method_getImplementation(list[j]) - slide);
+			}
+			free(list);
+		}
+	}
+	free(classes);
+}
+
+static void
+brightness_probe_start(void)
+{
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC),
+	    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ brightness_probe_dump("at 15 s"); });
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC),
+	    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ brightness_probe_dump("at 90 s"); });
+}
+
+/*
+ * Boot-arg brightness=1: every change of the brightness slider (and of auto-brightness, the lock
+ * screen, ...) ends in backboardd's -[BKDisplayBrightnessController setBrightnessLevel:reason:options:].
+ * Call the original, so that iOS keeps its own idea of the level, then pass the level on to the
+ * kernel (kern.hakios.brightness, permille), whose display driver does the dimming.
+ * The method is only touched when its type encoding is the one found on iOS 16.5.
+ */
+static void (*orig_set_brightness)(id, SEL, float, id, unsigned long long);
+static float (*orig_brightness_level)(id, SEL);
+static float last_brightness_level = -1.0f;     /* what iOS last set; -1 = nothing yet */
+
+/*
+ * With no backlight service iOS finds brightness control unavailable and its slider will not move.
+ * Say it is available, and when asked for the level give back the one that was last set (the
+ * original has nothing real to report), so that the slider stays where it was put.
+ */
+static BOOL
+brightness_available_hook(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+static float
+brightness_level_hook(id self, SEL selector)
+{
+	return last_brightness_level >= 0.0f ? last_brightness_level : orig_brightness_level(self, selector);
+}
+
+static void
+set_brightness_hook(id self, SEL selector, float level, id reason, unsigned long long options)
+{
+	int permille = (int)(level * 1000.0f + 0.5f);
+
+	last_brightness_level = level;
+	orig_set_brightness(self, selector, level, reason, options);
+	if (permille < 0) {
+		permille = 0;
+	} else if (permille > 1000) {
+		permille = 1000;
+	}
+	if (sysctlbyname("kern.hakios.brightness", NULL, NULL, &permille, sizeof(permille)) != 0) {
+		say("hakios: brightness: level %.3f: writing kern.hakios.brightness failed, errno %d\n", level, errno);
+	} else {
+		say("hakios: brightness: level %.3f -> %d permille\n", level, permille);
+	}
+}
+
+static void
+brightness_hook_install(void)
+{
+	Class cls = objc_getClass("BKDisplayBrightnessController");
+	Method method = cls ? class_getInstanceMethod(cls, sel_registerName("setBrightnessLevel:reason:options:")) : NULL;
+	const char *encoding = method ? method_getTypeEncoding(method) : NULL;
+
+	if (encoding == NULL || strcmp(encoding, "v36@0:8f16@20Q28") != 0) {
+		say("hakios: brightness: setBrightnessLevel:reason:options: not found as expected (encoding %s); left alone\n",
+		    encoding ? encoding : "none");
+		return;
+	}
+	orig_set_brightness = (void (*)(id, SEL, float, id, unsigned long long))method_getImplementation(method);
+	method_setImplementation(method, (IMP)set_brightness_hook);
+	say("hakios: brightness: hooked -[BKDisplayBrightnessController setBrightnessLevel:reason:options:]\n");
+
+	method = class_getInstanceMethod(cls, sel_registerName("isBrightnessLevelControlAvailable"));
+	encoding = method ? method_getTypeEncoding(method) : NULL;
+	if (encoding != NULL && strcmp(encoding, "B16@0:8") == 0) {
+		method_setImplementation(method, (IMP)brightness_available_hook);
+		say("hakios: brightness: isBrightnessLevelControlAvailable now answers yes\n");
+	}
+	method = class_getInstanceMethod(cls, sel_registerName("brightnessLevel"));
+	encoding = method ? method_getTypeEncoding(method) : NULL;
+	if (encoding != NULL && strcmp(encoding, "f16@0:8") == 0) {
+		orig_brightness_level = (float (*)(id, SEL))method_getImplementation(method);
+		method_setImplementation(method, (IMP)brightness_level_hook);
+		say("hakios: brightness: brightnessLevel returns the level last set\n");
+	}
+}
+
 __attribute__((unused)) static void
 brightness_fixes(void)
 {
@@ -1228,6 +1361,12 @@ hakios_init(void)
 		 * survive; not tried again since, and until it is, the five seconds stay.)
 		 */
 		input_start();
+		if (strstr(arguments, "bright_probe=1") != NULL) {
+			brightness_probe_start();
+		}
+		if (strstr(arguments, "brightness=1") != NULL) {
+			brightness_hook_install();
+		}
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {
 		container_manager_fixes();
 	}
