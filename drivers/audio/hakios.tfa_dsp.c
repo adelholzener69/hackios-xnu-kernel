@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-#include "../inc/kshim.h"
-#include "../inc/dbgprint.h"
-#include "../inc/tfa_container.h"
-#include "../inc/tfa.h"
-#include "../inc/tfa98xx_tfafieldnames.h"
-#include "../inc/tfa_internal.h"
+#include "tfa98xx/inc/kshim.h"
+#include "tfa98xx/inc/dbgprint.h"
+#include "tfa98xx/inc/tfa_container.h"
+#include "tfa98xx/inc/tfa.h"
+#include "tfa98xx/inc/tfa98xx_tfafieldnames.h"
+#include "tfa98xx/inc/tfa_internal.h"
 
 #ifdef __KERNEL__
 #ifdef pr_fmt

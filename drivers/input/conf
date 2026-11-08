@@ -17,3 +17,6 @@ driver GOODIX
 driver BUTTONS
 	file    bsd/dev/hakios.buttons.c
 	help    the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1)
+
+standard bsd/dev/hakios.raphael_touch.c
+	help    the Redmi K20 Pro's touch screen (touchscreen=1 on a raphael); does nothing on another device

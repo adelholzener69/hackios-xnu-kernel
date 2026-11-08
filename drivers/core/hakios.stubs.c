@@ -135,3 +135,20 @@ void hakios_torch_quiesce(void) {}
 void hakios_camera_init(void) {}
 void hakios_camera_quiesce(void) {}
 #endif
+
+/* ---- raphael: hooks the generic kernel calls whether or not this device's drivers are in ----------------------------- */
+#include <stddef.h>
+#ifndef HAKIOS_RAPHAEL_AUDIO
+void raphael_amp_init(void) {}
+bool raphael_amp_power(bool on) { (void)on; return false; }
+#endif
+#ifndef HAKIOS_ADRENO
+int raphael_display_init(uint32_t width, uint32_t height, uint32_t stride) { (void)width; (void)height; (void)stride; return -1; }
+void *raphael_display_back(bool preserve) { (void)preserve; return NULL; }
+bool raphael_display_present(void) { return false; }
+void raphael_display_quiesce(void) {}
+int raphael_display_scan_counter(uint32_t *line) { (void)line; return -1; }
+#endif
+#ifndef HAKIOS_CPUFREQ
+void hakios_cpufreq_boost(void) {}
+#endif

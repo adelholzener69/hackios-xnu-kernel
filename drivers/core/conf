@@ -19,3 +19,9 @@ driver SOCINFO
 	file    bsd/dev/hakios.socinfo.c
 	help    the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC
 	help    that keeps SMEM item 137; where the shared memory is comes from soc_smem=
+
+standard bsd/dev/hakios.display.c
+	help    the display's scan counter and next-frame time, for the window server's frame pacing (hakios_display_*)
+
+standard bsd/dev/hakios.brightness.c
+	help    kern.hakios.brightness: the panel's brightness from iOS's slider (brightness=1, brightness_dcs=1)

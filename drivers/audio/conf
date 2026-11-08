@@ -30,3 +30,15 @@ driver MIC
 driver VIRTIO_SOUND
 	file    bsd/dev/hakios.virtio_sound.c
 	help    QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only
+
+driver RAPHAEL_AUDIO
+	file    bsd/dev/hakios.raphael_amp.c
+	file    bsd/dev/hakios.raphael_mi2s.c
+	file    bsd/dev/hakios.raphael_tfa.c
+	file    bsd/dev/hakios.tfa_init.c
+	file    bsd/dev/hakios.tfa_dsp.c
+	file    bsd/dev/hakios.tfa_container.c
+	file    bsd/dev/hakios.tfa_glue.c
+	requires ADSP
+	help    the Redmi K20 Pro's loudspeaker: the TFA9874 amplifier on the SE1 I2C bus (NXP's code, Apache-2.0) and the
+	help    quaternary MI2S port the audio DSP opens for it (adsp_step=12 tfa=1 tfa_tx=1). Needs fw-audio/mono.cnt

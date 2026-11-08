@@ -3,11 +3,11 @@
  * regmap and i2c_transfer), done on a bus given by the caller: raphael_tfa.c in this kernel, a fake chip in
  * the host test. This file is new (not NXP's) and builds on the host as it does in the kernel.
  */
-#include "../inc/kshim.h"
-#include "../inc/dbgprint.h"
-#include "../inc/tfa_container.h"
-#include "../inc/tfa.h"
-#include "../inc/tfa_glue.h"
+#include "tfa98xx/inc/kshim.h"
+#include "tfa98xx/inc/dbgprint.h"
+#include "tfa98xx/inc/tfa_container.h"
+#include "tfa98xx/inc/tfa.h"
+#include "tfa98xx/inc/tfa_glue.h"
 
 static struct tfa_bus bus;
 static struct tfa_device device;

@@ -67,3 +67,15 @@ power   bsd/dev/hakios.thermal.c
 power   bsd/dev/hakios.pmic.c
 power   bsd/dev/hakios.battguard.c
 bluetooth bsd/dev/hakios.bt.c
+
+# raphael (Redmi K20 Pro): its own touch screen, the amplifier on the quaternary MI2S port, and the display's scan/brightness
+input    bsd/dev/hakios.raphael_touch.c
+audio    bsd/dev/hakios.raphael_amp.c
+audio    bsd/dev/hakios.raphael_mi2s.c
+audio    bsd/dev/hakios.raphael_tfa.c
+core     bsd/dev/hakios.display.c
+core     bsd/dev/hakios.brightness.c
+audio    bsd/dev/hakios.tfa_init.c
+audio    bsd/dev/hakios.tfa_dsp.c
+audio    bsd/dev/hakios.tfa_container.c
+audio    bsd/dev/hakios.tfa_glue.c
